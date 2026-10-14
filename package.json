@@ -1,0 +1,27 @@
+{
+  "name": "meow-corner",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Game idle kucing yang tinggal di bawah layar desktop",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "build:windows": "tauri build --bundles nsis"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.3",
+    "pixi.js": "^8.22.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.2",
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4"
+  }
+}
