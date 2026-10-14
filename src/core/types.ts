@@ -92,6 +92,43 @@ export interface CatState {
   /** Waktu terakhir dielus (ms epoch), 0 bila belum pernah. */
   lastPetAt: number;
   adoptedAt: number;
+  /** Ikatan dengan pemain, 0..100. Setiap 20 poin = satu hati. */
+  bond: number;
+  /** Aksesori yang dipakai, atau null. */
+  accessory: string | null;
+}
+
+export type AccessorySlot = "head" | "face" | "neck";
+
+export interface AccessoryDef {
+  id: string;
+  name: string;
+  slot: AccessorySlot;
+  /** Harga di toko; null = hanya bisa didapat sebagai hadiah dari kucing. */
+  price: number | null;
+  description: string;
+}
+
+export type GiftItem =
+  | { kind: "fish"; seconds: number }
+  | { kind: "treats"; amount: number }
+  | { kind: "accessory"; id: string }
+  | { kind: "trinket"; name: string };
+
+/** Hadiah yang dibawa kucing dan diletakkan di strip, menunggu diambil. */
+export interface GiftState {
+  id: string;
+  catId: string;
+  item: GiftItem;
+  /** Posisi horizontal relatif 0..1 sepanjang strip. */
+  x: number;
+  createdAt: number;
+}
+
+export interface Inventory {
+  treats: number;
+  /** Aksesori yang dimiliki (bisa dipakai satu kucing pada satu waktu). */
+  accessories: string[];
 }
 
 export interface VisitorState {
@@ -123,6 +160,10 @@ export interface Stats {
   sparklesCaught: number;
   catsAdopted: number;
   startedAt: number;
+  treatsGiven: number;
+  toyCatches: number;
+  giftsReceived: number;
+  purrs: number;
 }
 
 export interface GameState {
@@ -146,6 +187,9 @@ export interface GameState {
   nextSparkleAt: number;
   sparkle: SparkleState | null;
   catCounter: number;
+  inventory: Inventory;
+  gifts: GiftState[];
+  giftCounter: number;
   settings: Settings;
   stats: Stats;
 }

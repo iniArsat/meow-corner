@@ -27,6 +27,8 @@ function cat(partial: Partial<CatState>): CatState {
     hunger: 1,
     lastPetAt: 0,
     adoptedAt: 0,
+    bond: 0,
+    accessory: null,
     ...partial,
   };
 }

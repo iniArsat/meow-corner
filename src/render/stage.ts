@@ -1,28 +1,59 @@
-// Tampilan strip: fasilitas, kucing, tamu, ikan berkilau, dan efek partikel.
-// Membaca GameState, tidak pernah mengubahnya langsung (aksi lewat callback).
+// Tampilan strip: fasilitas, kucing, tamu, hadiah, mainan, dan semua interaksi
+// langsung dengan kucing (elus, usap, angkat-lempar, mainan bulu, camilan).
+// Stage membaca GameState; perubahan state selalu lewat StageActions.
 
 import { Application, Container, Graphics, Sprite, Text, TextureSource } from "pixi.js";
-import { isHungry } from "../core/economy";
-import type { Game } from "../core/game";
-import type { CatState, FacilityId } from "../core/types";
+import { BALANCE, FACILITIES } from "../core/data";
+import { hearts as heartCount, isHungry } from "../core/economy";
+import { formatFish } from "../core/format";
+import type { Game, GameEvent } from "../core/game";
+import type { CatState, FacilityId, GiftState } from "../core/types";
 import { FACILITY_IDS } from "../core/types";
-import type { CatPose, ObjectId } from "./pixelart";
-import { catTexture, objectTexture } from "./textures";
+import { Ambient, isNight } from "./ambient";
+import { CatActor, rand, type ActorHost, type SpotKind, type SpotRef } from "./catActor";
+import { Effects, TEXT_STYLE } from "./effects";
+import type { ObjectId } from "./pixelart";
+import { objectTexture } from "./textures";
 
-export interface StageCallbacks {
-  onCatClick(catId: string): void;
-  onVisitorClick(): void;
-  onSparkleClick(): void;
-  onFacilityClick(id: FacilityId): void;
+export type StageSound =
+  | "pet"
+  | "meow"
+  | "purr"
+  | "hiss"
+  | "thud"
+  | "chirp"
+  | "pop"
+  | "crunch"
+  | "coin"
+  | "feed"
+  | "denied";
+
+export interface StageActions {
+  pet(catId: string): void;
+  /** true bila dengkuran ini menambah ikatan (tidak sedang jeda). */
+  purr(catId: string): boolean;
+  treat(catId: string): boolean;
+  toyCatch(catId: string): number;
+  assign(catId: string, facility: FacilityId): boolean;
+  feedVisitor(): number;
+  catchSparkle(): number;
+  collectGift(giftId: string): { title: string; detail: string } | null;
+  openFacility(id: FacilityId): void;
+  sound(id: StageSound): void;
+  tip(key: string, text: string): void;
+  /** Mode mainan/camilan berubah dari sisi Stage (misalnya camilan habis). */
+  modesChanged(): void;
 }
 
 /** Lebar bawaan area kanan yang dipakai HUD; diperbarui dari ukuran HUD sebenarnya. */
 const DEFAULT_RESERVED = 340;
 const GROUND_MARGIN = 4;
-
-function rand(min: number, max: number): number {
-  return min + Math.random() * (max - min);
-}
+const DRAG_THRESHOLD = 6;
+/** Panjang usapan (piksel sprite) sampai kucing mendengkur. */
+const RUB_TO_PURR = 150;
+const CLICKS_TO_ANGER = 7;
+const CLICK_WINDOW_MS = 2500;
+const MAX_HUNTERS = 3;
 
 function pickWeighted<T extends string>(weights: Partial<Record<T, number>>): T {
   const entries = Object.entries(weights) as [T, number][];
@@ -35,345 +66,33 @@ function pickWeighted<T extends string>(weights: Partial<Record<T, number>>): T 
   return entries[0][0];
 }
 
-// ---------------------------------------------------------------------------
-// Partikel
-
-interface Particle {
-  node: Sprite | Text;
-  vx: number;
-  vy: number;
-  gravity: number;
-  life: number;
-  maxLife: number;
+function clamp(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v));
 }
 
 // ---------------------------------------------------------------------------
+// Tempat bertengger di fasilitas (dalam piksel sprite dari tengah-bawah fasilitas)
 
-type CatMode =
-  | "idle"
-  | "walk"
-  | "sit"
-  | "sleep"
-  | "eat"
-  | "play"
-  | "petted"
-  | "arrive"
-  | "wait"
-  | "leave";
+interface SpotDef {
+  kind: SpotKind;
+  dx: number;
+  elev: number;
+  /** Setengah lebar area mendarat. */
+  half: number;
+}
 
-const FRAME_SEQUENCES: Record<CatMode, CatPose[]> = {
-  idle: ["stand"],
-  walk: ["walk1", "stand", "walk2", "stand"],
-  sit: ["sit"],
-  sleep: ["sleep", "sleep2"],
-  eat: ["eat", "eat2"],
-  play: ["stand"],
-  petted: ["sitBlink"],
-  arrive: ["walk1", "stand", "walk2", "stand"],
-  wait: ["sit"],
-  leave: ["walk1", "stand", "walk2", "stand"],
+const SPOTS: Partial<Record<FacilityId, SpotDef[]>> = {
+  kardus: [{ kind: "box", dx: 0, elev: 9, half: 6 }],
+  tiang: [
+    { kind: "perch", dx: -1, elev: 20, half: 5 },
+    { kind: "perch", dx: -3, elev: 11, half: 4 },
+  ],
+  akuarium: [{ kind: "perch", dx: 0, elev: 14, half: 7 }],
+  rak: [{ kind: "perch", dx: 0, elev: 7, half: 7 }],
 };
 
-const FRAME_SECONDS: Record<CatMode, number> = {
-  idle: 1,
-  walk: 0.15,
-  sit: 1,
-  sleep: 1.3,
-  eat: 0.35,
-  play: 1,
-  petted: 1,
-  arrive: 0.15,
-  wait: 1,
-  leave: 0.15,
-};
-
-class CatActor {
-  readonly container = new Container();
-  readonly sprite: Sprite;
-  private shadow = new Graphics();
-  private bubble: Container | null = null;
-  private dots: Graphics | null = null;
-  x: number;
-  hop = 0;
-  dir: 1 | -1 = 1;
-  mode: CatMode = "idle";
-  private modeTime = 0;
-  private modeDuration = 2;
-  private frameTime = 0;
-  private frameIndex = 0;
-  private blinkTimer = rand(2, 5);
-  private blinking = 0;
-  private targetX = 0;
-  private zzzTimer = 0;
-  removed = false;
-  /** Pose saat ini, dipakai untuk menempatkan gelembung di atas kepala. */
-  pose: CatPose = "stand";
-
-  constructor(
-    private stage: Stage,
-    readonly id: string,
-    private coat: string,
-    x: number,
-    readonly isVisitor: boolean,
-  ) {
-    this.x = x;
-    this.sprite = new Sprite(catTexture(coat, "stand"));
-    this.sprite.anchor.set(0.5, 1);
-    this.sprite.eventMode = "static";
-    this.sprite.cursor = "pointer";
-    this.sprite.on("pointertap", () => {
-      if (this.isVisitor) stage.callbacks.onVisitorClick();
-      else stage.callbacks.onCatClick(this.id);
-    });
-    this.container.addChild(this.shadow, this.sprite);
-    if (isVisitor) {
-      this.dir = -1;
-      this.setMode("arrive");
-    } else {
-      this.setMode(Math.random() < 0.5 ? "sit" : "idle");
-    }
-  }
-
-  get scale(): number {
-    return this.stage.pixelScale;
-  }
-
-  setCoat(coat: string): void {
-    this.coat = coat;
-  }
-
-  setMode(mode: CatMode, duration?: number): void {
-    this.mode = mode;
-    this.modeTime = 0;
-    this.frameIndex = 0;
-    this.frameTime = 0;
-    this.hop = 0;
-    const focus = this.stage.focusMode;
-    switch (mode) {
-      case "idle":
-        this.modeDuration = duration ?? rand(2, 6);
-        break;
-      case "sit":
-        this.modeDuration = duration ?? rand(focus ? 10 : 4, focus ? 30 : 12);
-        break;
-      case "sleep":
-        this.modeDuration = duration ?? rand(focus ? 40 : 15, focus ? 90 : 40);
-        break;
-      case "eat":
-        this.modeDuration = duration ?? rand(3, 6);
-        break;
-      case "play":
-        this.modeDuration = duration ?? rand(1.6, 2.8);
-        break;
-      case "petted":
-        this.modeDuration = duration ?? 1.6;
-        break;
-      case "walk":
-      case "arrive":
-      case "leave":
-        this.modeDuration = Infinity;
-        break;
-      case "wait":
-        this.modeDuration = Infinity;
-        break;
-    }
-    if (mode === "arrive") {
-      const [minX, maxX] = this.stage.walkRange();
-      this.targetX = rand(minX + 80, Math.max(minX + 120, maxX - 60));
-    }
-    if (mode === "leave") this.targetX = this.stage.width + 80;
-  }
-
-  walkTo(x: number): void {
-    const [minX, maxX] = this.stage.walkRange();
-    this.targetX = Math.min(maxX, Math.max(minX, x));
-    this.setMode("walk");
-  }
-
-  /** Dipanggil saat kucing dielus. */
-  pet(): void {
-    this.stage.emitHearts(this.x, this.headY(), 3);
-    if (this.mode === "sleep" || this.mode === "walk" || this.mode === "idle" || this.mode === "sit" || this.mode === "play" || this.mode === "eat") {
-      this.setMode("petted");
-    }
-  }
-
-  /** Tamu yang pergi tidak bisa diklik lagi. */
-  disableInput(): void {
-    this.sprite.eventMode = "none";
-    this.sprite.cursor = "default";
-  }
-
-  private chooseNext(cat: CatState | undefined): void {
-    const stage = this.stage;
-    const focus = stage.focusMode;
-    const hungryish = cat ? cat.hunger < 0.6 : false;
-    const bowlX = stage.facilityX("mangkuk");
-    const playX = stage.facilityX("benang") ?? stage.facilityX("tiang");
-
-    if (hungryish && bowlX !== null && Math.random() < 0.5) {
-      if (Math.abs(this.x - bowlX) < 24 * this.scale) {
-        this.dir = bowlX >= this.x ? 1 : -1;
-        this.setMode("eat");
-      } else {
-        this.walkTo(bowlX - 20 * this.scale);
-      }
-      return;
-    }
-
-    const next = pickWeighted<CatMode>(
-      focus
-        ? { sleep: 50, sit: 30, idle: 15, walk: 5 }
-        : { walk: 34, idle: 18, sit: 24, sleep: 14, play: playX !== null ? 10 : 0 },
-    );
-    if (next === "walk") {
-      const home = cat?.facility ? stage.facilityX(cat.facility) : null;
-      const [minX, maxX] = stage.walkRange();
-      const target = home !== null ? home + rand(-140, 140) : rand(minX, maxX);
-      this.walkTo(target);
-    } else if (next === "play" && playX !== null) {
-      if (Math.abs(this.x - playX) < 40 * this.scale) this.setMode("play");
-      else this.walkTo(playX + rand(-30, 30) * this.scale * 0.5);
-    } else {
-      this.setMode(next);
-    }
-  }
-
-  update(dt: number, cat: CatState | undefined): void {
-    const s = this.scale;
-    this.modeTime += dt;
-    this.frameTime += dt;
-    const frames = FRAME_SEQUENCES[this.mode];
-    if (this.frameTime >= FRAME_SECONDS[this.mode]) {
-      this.frameTime = 0;
-      this.frameIndex = (this.frameIndex + 1) % frames.length;
-    }
-    let pose = frames[this.frameIndex % frames.length];
-
-    // Kedipan sesekali saat diam atau duduk.
-    if (this.mode === "idle" || this.mode === "sit" || this.mode === "wait") {
-      this.blinkTimer -= dt;
-      if (this.blinkTimer <= 0) {
-        this.blinking = 0.14;
-        this.blinkTimer = rand(2, 6);
-      }
-      if (this.blinking > 0) {
-        this.blinking -= dt;
-        pose = pose === "sit" ? "sitBlink" : "blink";
-      }
-    }
-
-    // Gerak
-    const speed = (this.stage.focusMode ? 9 : 14) * s;
-    if (this.mode === "walk" || this.mode === "arrive" || this.mode === "leave") {
-      const dx = this.targetX - this.x;
-      this.dir = dx >= 0 ? 1 : -1;
-      const step = Math.min(Math.abs(dx), speed * dt);
-      this.x += step * this.dir;
-      if (Math.abs(dx) < 1) {
-        if (this.mode === "arrive") {
-          this.dir = -1;
-          this.setMode("wait");
-        } else if (this.mode === "leave") {
-          this.removed = true;
-        } else {
-          const bowlX = this.stage.facilityX("mangkuk");
-          if (cat && cat.hunger < 0.6 && bowlX !== null && Math.abs(this.x - bowlX) < 24 * s) {
-            this.dir = 1;
-            this.setMode("eat");
-          } else {
-            this.setMode(Math.random() < 0.5 ? "idle" : "sit");
-          }
-        }
-      }
-    }
-
-    if (this.mode === "play") {
-      const phase = (this.modeTime * 2.4) % 1;
-      this.hop = Math.sin(phase * Math.PI) * 5 * s;
-      if (phase < 0.05) this.dir = Math.random() < 0.5 ? 1 : -1;
-    }
-
-    if (this.mode === "sleep") {
-      this.zzzTimer -= dt;
-      if (this.zzzTimer <= 0) {
-        this.zzzTimer = 2.2;
-        this.stage.emitZzz(this.x + 6 * s * this.dir, this.headY(pose));
-      }
-    }
-
-    if (this.modeTime >= this.modeDuration && !this.isVisitor) this.chooseNext(cat);
-
-    this.pose = pose;
-    this.sprite.texture = catTexture(this.coat, pose);
-    this.sprite.scale.set(this.dir * s, s);
-    this.sprite.position.set(Math.round(this.x), Math.round(this.stage.groundY - this.hop));
-    // Kucing yang lebih bawah-kanan digambar belakangan agar tumpukan konsisten.
-    this.container.zIndex = Math.round(this.x);
-    this.shadow.clear();
-    const shadowW = (pose.startsWith("sleep") ? 9 : 8) * s;
-    this.shadow
-      .ellipse(Math.round(this.x), this.stage.groundY - s * 0.5, shadowW, 1.6 * s)
-      .fill({ color: 0x000000, alpha: 0.18 * (1 - Math.min(1, this.hop / (8 * s))) });
-
-    this.updateBubble(cat);
-  }
-
-  /** Perkiraan posisi y atas kepala untuk pose ini. */
-  headY(pose: CatPose = this.pose): number {
-    const s = this.scale;
-    const top = pose.startsWith("sleep") ? 7 : pose.startsWith("sit") ? 2 : pose.startsWith("eat") ? 5 : 1;
-    return this.stage.groundY - this.hop - (17 - top) * s;
-  }
-
-  private updateBubble(cat: CatState | undefined): void {
-    const showFish = this.isVisitor ? this.mode === "wait" : !!cat && isHungry(cat) && this.mode !== "sleep";
-    if (showFish && !this.bubble) {
-      const c = new Container();
-      const b = new Sprite(objectTexture("bubble"));
-      const f = new Sprite(objectTexture(this.isVisitor ? "fish" : "fish"));
-      b.anchor.set(0.5, 1);
-      f.anchor.set(0.5, 0.5);
-      f.scale.set(0.75);
-      f.position.set(0, -7);
-      c.addChild(b, f);
-      c.eventMode = "none";
-      this.bubble = c;
-      this.container.addChild(c);
-      if (this.isVisitor) {
-        this.dots = new Graphics();
-        this.container.addChild(this.dots);
-      }
-    } else if (!showFish && this.bubble) {
-      this.bubble.destroy({ children: true });
-      this.bubble = null;
-      this.dots?.destroy();
-      this.dots = null;
-    }
-    if (this.bubble) {
-      const s = this.scale;
-      const bob = Math.sin(performance.now() / 300) * 0.6 * s;
-      this.bubble.scale.set(s * 0.75);
-      this.bubble.position.set(Math.round(this.x + 3 * s), Math.round(this.headY() - 2 * s + bob));
-      // Gelembung tamu berkedip pelan agar menarik perhatian; gelembung lapar lebih tenang.
-      this.bubble.alpha = this.isVisitor ? 1 : 0.9;
-    }
-    if (this.dots) {
-      const s = this.scale;
-      const fed = this.stage.visitorFed();
-      this.dots.clear();
-      for (let i = 0; i < 3; i++) {
-        this.dots
-          .circle(Math.round(this.x - 4 * s + i * 4 * s), Math.round(this.stage.groundY + 2 * s), 1.2 * s)
-          .fill({ color: i < fed ? 0xef5b7b : 0xfffaf0 })
-          .stroke({ color: 0x3b2f2a, width: Math.max(1, s * 0.5) });
-      }
-    }
-  }
-
-  destroy(): void {
-    this.container.destroy({ children: true });
-  }
+function spotKey(s: SpotRef): string {
+  return `${s.facility}:${s.index}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,16 +103,178 @@ interface FacilityView {
   sprite: Sprite;
   count: Text;
   shadow: Graphics;
+  glow: Graphics;
+  eyes: Graphics;
+  x: number;
+  wobble: number;
+  glowKey: string;
+  eyesKey: string;
+}
+
+interface GiftView {
+  gift: GiftState;
+  sprite: Sprite;
+  revealed: boolean;
+  carrier: CatActor | null;
+  t: number;
+  /** Posisi layar tetap (tidak ikut bergeser saat lebar HUD berubah). */
   x: number;
 }
 
-export class Stage {
+type PressTarget =
+  | { kind: "actor"; actor: CatActor }
+  | { kind: "gift"; view: GiftView }
+  | { kind: "sparkle" }
+  | { kind: "facility"; id: FacilityId };
+
+interface Press {
+  target: PressTarget;
+  pointerId: number;
+  x0: number;
+  y0: number;
+  lastX: number;
+  lastY: number;
+  lastT: number;
+  vx: number;
+  vy: number;
+}
+
+type SocialType = "boop" | "groom" | "playfight" | "cuddle";
+
+interface Social {
+  type: SocialType;
+  a: CatActor;
+  b: CatActor;
+  arrived: number;
+  acting: boolean;
+  fxTimer: number;
+}
+
+// ---------------------------------------------------------------------------
+// Mainan bulu: bulu di ujung tali yang menggantung dari kursor.
+
+class Feather {
+  readonly node = new Container();
+  private line = new Graphics();
+  private sprite = new Sprite(objectTexture("feather"));
+  x = 0;
+  y = 0;
+  vx = 0;
+  vy = 0;
+  visible = false;
+  heldBy: CatActor | null = null;
+  private heldTime = 0;
+  private ax = 0;
+  private ay = 0;
+
+  constructor() {
+    this.sprite.anchor.set(0.5, 0.1);
+    this.node.addChild(this.line, this.sprite);
+    this.node.visible = false;
+  }
+
+  grab(by: CatActor): void {
+    this.heldBy = by;
+    this.heldTime = 0.8;
+  }
+
+  update(dt: number, anchor: { x: number; y: number } | null, s: number, groundY: number): void {
+    const length = 30 * s;
+    if (!anchor) {
+      this.visible = false;
+      this.heldBy = null;
+      this.node.visible = false;
+      return;
+    }
+    if (!this.visible) {
+      this.visible = true;
+      this.x = anchor.x;
+      this.y = anchor.y + length;
+      this.vx = 0;
+      this.vy = 0;
+    }
+    this.ax = anchor.x;
+    this.ay = anchor.y;
+
+    if (this.heldBy) {
+      const m = this.heldBy.mouthPos();
+      this.x = m.x;
+      this.y = m.y;
+      this.heldTime -= dt;
+      if (this.heldTime <= 0 || this.heldBy.mode === "held" || this.heldBy.removed) {
+        this.heldBy = null;
+        this.vy = -90 * s;
+      }
+    } else {
+      this.vy += 260 * s * dt;
+      const damp = Math.max(0, 1 - 1.6 * dt);
+      this.vx *= damp;
+      this.vy *= damp;
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      const dx = this.x - anchor.x;
+      const dy = this.y - anchor.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > length) {
+        const nx = dx / dist;
+        const ny = dy / dist;
+        this.x = anchor.x + nx * length;
+        this.y = anchor.y + ny * length;
+        const radial = this.vx * nx + this.vy * ny;
+        if (radial > 0) {
+          this.vx -= radial * nx;
+          this.vy -= radial * ny;
+        }
+      }
+      const floor = groundY - 2 * s;
+      if (this.y > floor) {
+        this.y = floor;
+        this.vy = Math.min(0, this.vy);
+        this.vx *= Math.max(0, 1 - 5 * dt);
+      }
+    }
+    this.draw(s);
+  }
+
+  /** Sentakan kecil saat pemain menggerakkan kursor cepat. */
+  nudge(vx: number, vy: number): void {
+    if (this.heldBy) return;
+    this.vx += vx;
+    this.vy += vy;
+  }
+
+  private draw(s: number): void {
+    this.node.visible = true;
+    const g = this.line;
+    g.clear();
+    // Tongkat pancing pendek.
+    g.moveTo(this.ax, this.ay)
+      .lineTo(this.ax + 9 * s, this.ay - 13 * s)
+      .stroke({ color: 0x8a5a35, width: 1.4 * s, cap: "round" });
+    // Tali melengkung sedikit bila kendur.
+    const dist = Math.hypot(this.x - this.ax, this.y - this.ay);
+    const sag = Math.max(0, 30 * s - dist) * 0.6;
+    g.moveTo(this.ax, this.ay)
+      .quadraticCurveTo((this.ax + this.x) / 2, (this.ay + this.y) / 2 + sag, this.x, this.y)
+      .stroke({ color: 0xfffaf0, width: Math.max(1, 0.5 * s), alpha: 0.9 });
+    this.sprite.scale.set(s);
+    this.sprite.position.set(Math.round(this.x), Math.round(this.y));
+    this.sprite.rotation = clamp(this.vx * 0.002, -0.6, 0.6);
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+export class Stage implements ActorHost {
   readonly app: Application;
-  readonly callbacks: StageCallbacks;
   private game: Game;
+  private actions: StageActions;
+  readonly fx = new Effects();
+  private ambient = new Ambient();
   private facilityLayer = new Container();
+  private giftLayer = new Container();
   private actorLayer = new Container();
-  private fxLayer = new Container();
+  private toyLayer = new Container();
   private labelLayer = new Container();
   private facilities = new Map<FacilityId, FacilityView>();
   private cats = new Map<string, CatActor>();
@@ -401,9 +282,14 @@ export class Stage {
   /** Tamu yang sedang berjalan keluar layar; tidak bisa diklik. */
   private leaving: CatActor[] = [];
   private sparkle: Container | null = null;
-  private particles: Particle[] = [];
-  private hoverLabel: Text;
+  private sparkleX = 0;
   private sparkleTimer = 0;
+  private gifts = new Map<string, GiftView>();
+  private hoverLabel: Text;
+  private hoverHearts = new Container();
+  private feather = new Feather();
+  private treatCursor = new Sprite(objectTexture("treat"));
+
   focusMode = false;
   pixelScale = 3;
   /** Lebar area kanan yang tertutup HUD; kucing tidak berjalan ke sana. */
@@ -412,32 +298,61 @@ export class Stage {
   height = 0;
   groundY = 0;
 
-  private constructor(app: Application, game: Game, callbacks: StageCallbacks) {
+  toyMode = false;
+  treatMode = false;
+
+  // Pointer
+  private cursor: { x: number; y: number } | null = null;
+  private prevCursor: { x: number; y: number } | null = null;
+  private cursorMovedAt = 0;
+  private press: Press | null = null;
+  private dragging: CatActor | null = null;
+  private dropTarget: FacilityId | null = null;
+  private rubTarget: CatActor | null = null;
+  private rubFxTimer = 0;
+
+  // Sutradara kehidupan kucing
+  private directorTimer = 3;
+  private socials: Social[] = [];
+  private lastZoomies = 0;
+  private greetedVisitor = false;
+  private hour = new Date().getHours();
+  private hourTimer = 0;
+
+  private constructor(app: Application, game: Game, actions: StageActions) {
     this.app = app;
     this.game = game;
-    this.callbacks = callbacks;
-    app.stage.addChild(this.facilityLayer, this.actorLayer, this.fxLayer, this.labelLayer);
+    this.actions = actions;
+    app.stage.addChild(
+      this.ambient.layer,
+      this.facilityLayer,
+      this.giftLayer,
+      this.actorLayer,
+      this.fx.layer,
+      this.toyLayer,
+      this.labelLayer,
+    );
     this.actorLayer.sortableChildren = true;
-    this.hoverLabel = new Text({
-      text: "",
-      style: {
-        fontFamily: "Segoe UI, system-ui, sans-serif",
-        fontSize: 13,
-        fontWeight: "700",
-        fill: 0xfffaf0,
-        stroke: { color: 0x2a1d1a, width: 4 },
-        align: "center",
-      },
-    });
+    this.treatCursor.anchor.set(0.5);
+    this.treatCursor.visible = false;
+    this.toyLayer.addChild(this.feather.node, this.treatCursor);
+    this.hoverLabel = new Text({ text: "", style: { ...TEXT_STYLE, fontSize: 13, fontWeight: "700", fill: 0xfffaf0, align: "center" } });
     this.hoverLabel.anchor.set(0.5, 1);
     this.hoverLabel.visible = false;
-    this.labelLayer.addChild(this.hoverLabel);
+    this.labelLayer.addChild(this.hoverLabel, this.hoverHearts);
+    for (let i = 0; i < 5; i++) {
+      const sp = new Sprite(objectTexture("heartEmpty"));
+      sp.anchor.set(0.5, 1);
+      this.hoverHearts.addChild(sp);
+    }
+    this.hoverHearts.visible = false;
     this.resize();
     window.addEventListener("resize", () => this.resize());
+    this.bindInput();
     app.ticker.add((ticker) => this.update(Math.min(0.1, ticker.deltaMS / 1000)));
   }
 
-  static async create(el: HTMLElement, game: Game, callbacks: StageCallbacks): Promise<Stage> {
+  static async create(el: HTMLElement, game: Game, actions: StageActions): Promise<Stage> {
     TextureSource.defaultOptions.scaleMode = "nearest";
     const app = new Application();
     await app.init({
@@ -446,9 +361,12 @@ export class Stage {
       antialias: false,
       autoDensity: true,
       resolution: window.devicePixelRatio || 1,
+      // Semua input ditangani sendiri lewat event DOM.
+      eventFeatures: { move: false, globalMove: false, click: false, wheel: false },
     });
+    app.stage.eventMode = "none";
     el.appendChild(app.canvas);
-    const stage = new Stage(app, game, callbacks);
+    const stage = new Stage(app, game, actions);
     stage.setFocusMode(game.state.settings.focusMode);
     stage.setPixelScale(game.state.settings.scale);
     stage.sync();
@@ -456,7 +374,75 @@ export class Stage {
   }
 
   // -------------------------------------------------------------------------
-  // Tata letak
+  // ActorHost
+
+  walkRange(): [number, number] {
+    return [16 * this.pixelScale, Math.max(200, this.width - this.reservedRight)];
+  }
+
+  spotPos(spot: SpotRef): { x: number; y: number } | null {
+    const view = this.facilities.get(spot.facility);
+    const def = SPOTS[spot.facility]?.[spot.index];
+    if (!view || !def) return null;
+    const s = this.pixelScale;
+    return { x: view.x + def.dx * s, y: this.groundY - def.elev * s };
+  }
+
+  private spotFree(spot: SpotRef, except?: CatActor): boolean {
+    const key = spotKey(spot);
+    for (const a of this.cats.values()) {
+      if (a === except) continue;
+      if ((a.spot && spotKey(a.spot) === key) || a.claim === key) return false;
+    }
+    return true;
+  }
+
+  surfaceAt(x: number, yPrev: number, yNow: number, ignore: CatActor): SpotRef | null {
+    const s = this.pixelScale;
+    for (const [id, defs] of Object.entries(SPOTS) as [FacilityId, SpotDef[]][]) {
+      if (!this.facilities.has(id)) continue;
+      for (let i = 0; i < defs.length; i++) {
+        const ref: SpotRef = { facility: id, index: i, kind: defs[i].kind };
+        const pos = this.spotPos(ref)!;
+        if (Math.abs(x - pos.x) > defs[i].half * s) continue;
+        if (yPrev <= pos.y && yNow >= pos.y && this.spotFree(ref, ignore)) return ref;
+      }
+    }
+    return null;
+  }
+
+  landed(actor: CatActor, hard: boolean): void {
+    if (actor.isVisitor) return;
+    const now = Date.now();
+    if (actor.spot?.kind === "box") {
+      // Masuk kardus: sembunyi sebentar lalu keluar sendiri.
+      if (hard) actor.lastHardLanding = now;
+      actor.queue(() => actor.jumpDown());
+      return;
+    }
+    if (hard) {
+      const again = now - actor.lastHardLanding < 15_000;
+      actor.lastHardLanding = now;
+      if (again) {
+        actor.queue(() => this.makeAngry(actor));
+        return;
+      }
+      // Pendaratan keras: kaget sebentar, lalu pura-pura tidak terjadi apa-apa (menjilati bulu).
+      actor.queue(() => {
+        actor.emote("question", 1.2, false);
+        actor.setMode("sit", 0.6, () => actor.setMode("groom", rand(2, 3.5)));
+      });
+      return;
+    }
+    if (actor.spot) actor.queue(() => this.perchActivity(actor));
+  }
+
+  sound(id: "thud"): void {
+    this.actions.sound(id);
+  }
+
+  // -------------------------------------------------------------------------
+  // Tata letak dan pengaturan
 
   resize(): void {
     this.width = window.innerWidth;
@@ -465,17 +451,15 @@ export class Stage {
     this.layoutFacilities();
   }
 
-  walkRange(): [number, number] {
-    return [16 * this.pixelScale, Math.max(200, this.width - this.reservedRight)];
-  }
-
   setPixelScale(scale: number): void {
     this.pixelScale = scale;
+    this.fx.scale = scale;
     this.layoutFacilities();
   }
 
   setFocusMode(on: boolean): void {
     this.focusMode = on;
+    this.fx.calm = on;
     this.app.ticker.maxFPS = on ? 12 : 30;
   }
 
@@ -484,12 +468,22 @@ export class Stage {
     else this.app.ticker.start();
   }
 
-  facilityX(id: FacilityId): number | null {
-    return this.facilities.get(id)?.x ?? null;
+  setToyMode(on: boolean): void {
+    if (this.toyMode === on) return;
+    this.toyMode = on;
+    if (on) this.treatMode = false;
+    if (on) this.actions.tip("toy", "Gerakkan kursor di dekat lantai: kucing akan mengejar dan menerkam bulunya!");
   }
 
-  visitorFed(): number {
-    return this.game.state.visitor?.fed ?? 0;
+  setTreatMode(on: boolean): void {
+    if (this.treatMode === on) return;
+    this.treatMode = on;
+    if (on) this.toyMode = false;
+    if (on) this.actions.tip("treat", "Klik kucing untuk memberinya camilan. Kucing yang ngambek juga luluh dengan camilan.");
+  }
+
+  facilityX(id: FacilityId): number | null {
+    return this.facilities.get(id)?.x ?? null;
   }
 
   private layoutFacilities(): void {
@@ -533,34 +527,45 @@ export class Stage {
     const ids = new Set(state.cats.map((c) => c.id));
     for (const [id, actor] of this.cats) {
       if (!ids.has(id)) {
+        if (this.dragging === actor) this.dragging = null;
         actor.destroy();
         this.cats.delete(id);
       }
     }
     const [minX, maxX] = this.walkRange();
     for (const cat of state.cats) {
-      if (this.cats.has(cat.id)) continue;
+      const existing = this.cats.get(cat.id);
+      if (existing) {
+        existing.coat = cat.coat;
+        existing.accessory = cat.accessory;
+        continue;
+      }
       const home = cat.facility ? this.facilityX(cat.facility) : null;
       const actor = new CatActor(this, cat.id, cat.coat, home ?? rand(minX, maxX), false);
+      actor.accessory = cat.accessory;
       this.cats.set(cat.id, actor);
       this.actorLayer.addChild(actor.container);
     }
 
     if (!state.visitor && this.visitor) {
       const v = this.visitor;
-      v.setMode("leave");
-      v.disableInput();
+      v.setNeed(null);
+      v.setDots(null);
+      v.leaveTo(this.width + 80);
       this.leaving.push(v);
       this.visitor = null;
     }
     if (state.visitor && !this.visitor) {
-      const actor = new CatActor(this, "visitor", state.visitor.coat, this.walkRange()[1] + 40, true);
+      const actor = new CatActor(this, "visitor", state.visitor.coat, maxX + 40, true);
       // Tamu yang sudah siap diadopsi (dipulihkan dari simpanan) langsung duduk menunggu.
       if (state.visitor.fed >= 3) {
-        actor.x = this.walkRange()[1] - 60;
+        actor.x = maxX - 60;
         actor.setMode("wait");
+      } else {
+        actor.arriveAt(rand(minX + 80, Math.max(minX + 120, maxX - 60)));
       }
       this.visitor = actor;
+      this.greetedVisitor = false;
       this.actorLayer.addChild(actor.container);
     }
 
@@ -568,6 +573,33 @@ export class Stage {
     if (!state.sparkle && this.sparkle) {
       this.sparkle.destroy({ children: true });
       this.sparkle = null;
+    }
+
+    this.syncGifts();
+  }
+
+  /** Reaksi visual terhadap event game yang tidak berasal dari klik di strip. */
+  onGameEvent(e: GameEvent): void {
+    switch (e.type) {
+      case "fed":
+        this.feedingTime();
+        break;
+      case "bond":
+        if (e.levelUp) {
+          const a = this.cats.get(e.catId);
+          if (a) {
+            const head = a.headPos();
+            this.fx.ring(head.x, head.y, 0xef5b7b);
+            this.fx.hearts(head.x, head.y, 5);
+            a.emote("heart", 2);
+          }
+        }
+        break;
+      case "purchased":
+        if (this.game.state.facilities[e.facility] === e.amount) this.curiousAbout(e.facility);
+        break;
+      default:
+        break;
     }
   }
 
@@ -581,211 +613,1590 @@ export class Stage {
     if (actor) {
       actor.x = v.x;
       actor.dir = v.dir;
-      actor.setMode("petted");
+      actor.setMode("happy", 2);
     }
-    this.emitHearts(v.x, v.headY(), 6);
+    const head = v.headPos();
+    this.fx.hearts(head.x, head.y, 6);
+    this.fx.ring(head.x, head.y, 0xef5b7b);
     v.destroy();
   }
 
   private createFacility(id: FacilityId): FacilityView {
     const container = new Container();
     const shadow = new Graphics();
+    const glow = new Graphics();
+    const eyes = new Graphics();
     const sprite = new Sprite(objectTexture(id as ObjectId));
     sprite.anchor.set(0.5, 1);
-    sprite.eventMode = "static";
-    sprite.cursor = "pointer";
-    sprite.on("pointertap", () => this.callbacks.onFacilityClick(id));
-    const count = new Text({
-      text: "",
-      style: {
-        fontFamily: "Segoe UI, system-ui, sans-serif",
-        fontSize: 12,
-        fontWeight: "800",
-        fill: 0xfffaf0,
-        stroke: { color: 0x2a1d1a, width: 3 },
-      },
-    });
+    const count = new Text({ text: "", style: { ...TEXT_STYLE, fontSize: 12, fill: 0xfffaf0, stroke: { color: 0x2a1d1a, width: 3 } } });
     count.anchor.set(1, 1);
-    container.addChild(shadow, sprite, count);
+    container.addChild(glow, shadow, sprite, eyes, count);
     this.facilityLayer.addChild(container);
-    return { id, container, sprite, count, shadow, x: 0 };
+    return { id, container, sprite, count, shadow, glow, eyes, x: 0, wobble: 0, glowKey: "", eyesKey: "" };
   }
 
   private createSparkle(): void {
-    const sp = this.game.state.sparkle;
-    if (!sp) return;
     const c = new Container();
     const fish = new Sprite(objectTexture("goldfish"));
     fish.anchor.set(0.5, 0.5);
-    fish.eventMode = "static";
-    fish.cursor = "pointer";
-    fish.on("pointertap", () => this.callbacks.onSparkleClick());
     c.addChild(fish);
     this.sparkle = c;
-    this.fxLayer.addChild(c);
+    this.sparkleX = this.fractionX(this.game.state.sparkle?.x ?? 0.5);
+    this.giftLayer.addChild(c);
   }
 
   // -------------------------------------------------------------------------
-  // Efek
+  // Hadiah dari kucing
 
-  private addParticle(node: Sprite | Text, vx: number, vy: number, life: number, gravity = 0): void {
-    this.fxLayer.addChild(node);
-    this.particles.push({ node, vx, vy, gravity, life, maxLife: life });
+  /** Posisi dari pecahan 0..1 area jalan, dihitung sekali saat benda muncul. */
+  private fractionX(fraction: number): number {
+    const [minX, maxX] = this.walkRange();
+    return minX + fraction * (maxX - minX);
   }
 
-  emitHearts(x: number, y: number, n: number): void {
-    const s = this.pixelScale;
-    for (let i = 0; i < n; i++) {
-      const h = new Sprite(objectTexture("heart"));
-      h.anchor.set(0.5);
-      h.scale.set(s * 0.6);
-      h.position.set(x + rand(-6, 6) * s, y);
-      this.addParticle(h, rand(-8, 8) * s, rand(-26, -16) * s, rand(1, 1.6));
+  private giftX(view: GiftView): number {
+    const [minX, maxX] = this.walkRange();
+    return clamp(view.x, minX, maxX);
+  }
+
+  private syncGifts(): void {
+    const state = this.game.state;
+    const ids = new Set(state.gifts.map((g) => g.id));
+    for (const [id, view] of this.gifts) {
+      if (ids.has(id)) continue;
+      if (view.carrier && view.carrier.task === "gift") {
+        view.carrier.cancelTask();
+        view.carrier.needsDecision = true;
+      }
+      view.sprite.destroy();
+      this.gifts.delete(id);
+    }
+    for (const gift of state.gifts) {
+      if (this.gifts.has(gift.id)) continue;
+      const sprite = new Sprite(objectTexture("giftbox"));
+      sprite.anchor.set(0.5, 1);
+      sprite.visible = false;
+      this.giftLayer.addChild(sprite);
+      const view: GiftView = { gift, sprite, revealed: false, carrier: null, t: 0, x: this.fractionX(gift.x) };
+      this.gifts.set(gift.id, view);
+      const giver = this.cats.get(gift.catId);
+      const fresh = Date.now() - gift.createdAt < 5000;
+      if (fresh && giver && !giver.airborne && giver !== this.dragging && giver.mode !== "angry") this.deliverGift(giver, view);
+      else this.revealGift(view, false);
     }
   }
 
-  emitZzz(x: number, y: number): void {
-    const s = this.pixelScale;
-    const z = new Sprite(objectTexture("zzz"));
-    z.anchor.set(0.5);
-    z.scale.set(s * 0.6);
-    z.position.set(x, y);
-    this.addParticle(z, 4 * s, -6 * s, 2);
+  private deliverGift(a: CatActor, view: GiftView): void {
+    a.cancelTask();
+    a.task = "gift";
+    view.carrier = a;
+    a.setCarry("giftbox");
+    const go = () => {
+      if (a.task !== "gift") return;
+      a.setCarry("giftbox");
+      const gx = this.giftX(view);
+      const tx = gx + (a.x < gx ? -8 : 8) * this.pixelScale;
+      a.walkTo(tx, () => {
+        a.setCarry(null);
+        a.task = null;
+        this.revealGift(view, true);
+        a.face(this.giftX(view));
+        a.setMode("proud", 2.5);
+        a.emote("exclaim", 1.4);
+        this.actions.sound("meow");
+        this.actions.tip("gift", "Kucing yang sayang padamu (3 hati ke atas) kadang membawa hadiah. Klik kadonya!");
+      }, Math.abs(tx - a.x) > 200);
+    };
+    if (a.spot || a.hidden) a.jumpDown(go);
+    else go();
   }
 
-  emitStars(x: number, y: number, n: number): void {
-    const s = this.pixelScale;
-    for (let i = 0; i < n; i++) {
-      const st = new Sprite(objectTexture("star"));
-      st.anchor.set(0.5);
-      st.scale.set(s * 0.5);
-      st.position.set(x, y);
-      this.addParticle(st, rand(-30, 30) * s, rand(-40, -15) * s, rand(0.6, 1), 60 * s);
+  private revealGift(view: GiftView, fromCat: boolean): void {
+    view.revealed = true;
+    view.carrier = null;
+    view.sprite.visible = true;
+    view.t = 0;
+    if (fromCat) {
+      this.fx.dust(this.giftX(view), this.groundY, 4);
+      this.actions.sound("pop");
     }
   }
 
-  floatText(x: number, y: number, text: string, color = 0xffe08a): void {
-    const t = new Text({
-      text,
-      style: {
-        fontFamily: "Segoe UI, system-ui, sans-serif",
-        fontSize: 15,
-        fontWeight: "800",
-        fill: color,
-        stroke: { color: 0x2a1d1a, width: 4 },
-      },
+  // -------------------------------------------------------------------------
+  // Input
+
+  private bindInput(): void {
+    const canvas = this.app.canvas;
+    canvas.addEventListener("pointerdown", (e) => this.onDown(e));
+    window.addEventListener("pointermove", (e) => this.onMove(e));
+    window.addEventListener("pointerup", (e) => this.onUp(e));
+    window.addEventListener("pointercancel", () => this.cancelPress());
+    window.addEventListener("blur", () => this.cancelPress());
+    // Kursor keluar dari jendela (mode browser): bulu dan camilan disembunyikan.
+    document.addEventListener("mouseout", (e) => {
+      if (!e.relatedTarget) this.setHover(null, null);
     });
-    t.anchor.set(0.5, 1);
-    t.position.set(x, y);
-    this.addParticle(t, 0, -28, 1.6);
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && (this.toyMode || this.treatMode)) {
+        this.toyMode = false;
+        this.treatMode = false;
+        this.actions.modesChanged();
+      }
+    });
   }
 
-  catPosition(catId: string): { x: number; y: number } | null {
-    const a = catId === "visitor" ? this.visitor : this.cats.get(catId);
-    return a ? { x: a.x, y: a.headY() } : null;
+  /** Posisi kursor dari polling klik tembus (Tauri) atau pointermove (browser). */
+  setHover(x: number | null, y: number | null): void {
+    if (x === null || y === null) {
+      if (!this.dragging && !this.press) this.cursor = null;
+      return;
+    }
+    this.updateCursor(x, y);
   }
 
-  petCat(catId: string): void {
-    this.cats.get(catId)?.pet();
+  private updateCursor(x: number, y: number): void {
+    const now = performance.now();
+    if (!this.cursor || Math.abs(this.cursor.x - x) > 0.5 || Math.abs(this.cursor.y - y) > 0.5) this.cursorMovedAt = now;
+    this.cursor = { x, y };
   }
 
-  sparklePosition(): { x: number; y: number } | null {
-    return this.sparkle ? { x: this.sparkle.x, y: this.sparkle.y } : null;
+  private onDown(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    const target = this.targetAt(e.clientX, e.clientY);
+    if (!target) return;
+    e.preventDefault();
+    this.updateCursor(e.clientX, e.clientY);
+    this.press = {
+      target,
+      pointerId: e.pointerId,
+      x0: e.clientX,
+      y0: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      lastT: performance.now(),
+      vx: 0,
+      vy: 0,
+    };
+    try {
+      this.app.canvas.setPointerCapture(e.pointerId);
+    } catch {
+      // Abaikan: penangkapan pointer hanya membantu saat menyeret keluar jendela.
+    }
+  }
+
+  private onMove(e: PointerEvent): void {
+    const x = e.clientX;
+    const y = e.clientY;
+    const prev = this.cursor;
+    this.updateCursor(x, y);
+    // Gerakan cepat kursor menyentak bulu mainan.
+    if (this.toyMode && prev) this.feather.nudge((x - prev.x) * 8, (y - prev.y) * 8);
+
+    const p = this.press;
+    if (!p) return;
+    if (e.buttons === 0) {
+      // Tombol sudah dilepas di luar jendela dan pointerup tidak sampai ke sini.
+      this.cancelPress();
+      return;
+    }
+    const now = performance.now();
+    const dt = (now - p.lastT) / 1000;
+    if (dt > 0.001) {
+      p.vx = p.vx * 0.5 + ((x - p.lastX) / dt) * 0.5;
+      p.vy = p.vy * 0.5 + ((y - p.lastY) / dt) * 0.5;
+    }
+    p.lastX = x;
+    p.lastY = y;
+    p.lastT = now;
+
+    if (!this.dragging && p.target.kind === "actor" && Math.hypot(x - p.x0, y - p.y0) > DRAG_THRESHOLD) {
+      const a = p.target.actor;
+      if (!a.isVisitor && !a.removed) this.startDrag(a);
+    }
+    if (this.dragging) {
+      this.dragging.vx = p.vx;
+      this.dragging.dragTo(x, y);
+      this.dropTarget = this.facilityDropAt(x, y);
+    }
+  }
+
+  private onUp(e: PointerEvent): void {
+    const p = this.press;
+    if (!p || e.pointerId !== p.pointerId) return;
+    this.press = null;
+    try {
+      this.app.canvas.releasePointerCapture(e.pointerId);
+    } catch {
+      // Tidak masalah bila sudah dilepas.
+    }
+    if (this.dragging) {
+      // Berhenti sejenak sebelum melepas = jatuh pelan, bukan dilempar.
+      const still = performance.now() - p.lastT > 90;
+      this.endDrag(e.clientX, e.clientY, still ? 0 : p.vx, still ? 0 : p.vy);
+      return;
+    }
+    if (Math.hypot(e.clientX - p.x0, e.clientY - p.y0) > 14) return;
+    this.click(p.target);
+  }
+
+  /** Lepaskan tekanan/seretan yang sedang berlangsung (juga saat jendela disembunyikan). */
+  cancelPress(): void {
+    if (this.dragging && this.press) this.endDrag(this.press.lastX, this.press.lastY, 0, 0);
+    else if (this.dragging) this.endDrag(this.dragging.x, this.dragging.y, 0, 0);
+    this.press = null;
+  }
+
+  private startDrag(a: CatActor): void {
+    a.cancelTask();
+    a.rub = 0;
+    a.pickUp();
+    a.emote("exclaim", 0.7, false);
+    this.dragging = a;
+    this.actions.sound("meow");
+    this.actions.tip("drag", "Jatuhkan kucing di atas fasilitas untuk menugaskannya di sana. Jangan dilempar terlalu keras!");
+  }
+
+  private endDrag(x: number, y: number, vx: number, vy: number): void {
+    const a = this.dragging;
+    this.dragging = null;
+    this.dropTarget = null;
+    if (!a) return;
+    const fid = this.facilityDropAt(x, y);
+    const s = this.pixelScale;
+    if (fid) {
+      const cat = this.game.cat(a.id);
+      if (cat && cat.facility !== fid) {
+        const ok = this.actions.assign(a.id, fid);
+        const view = this.facilities.get(fid)!;
+        const top = this.groundY - view.sprite.height - 4 * s;
+        if (ok) {
+          this.fx.text(view.x, top, `${cat.name} bertugas di ${FACILITIES[fid].name}`, 0xfff3b0, 13);
+          this.fx.stars(view.x, top, 5);
+        } else {
+          this.fx.text(view.x, top, "Penuh!", 0xff9a8a, 13);
+          this.actions.sound("denied");
+        }
+      }
+    }
+    a.drop(vx, vy, null);
+  }
+
+  private click(target: PressTarget): void {
+    const s = this.pixelScale;
+    switch (target.kind) {
+      case "actor":
+        if (target.actor.isVisitor) this.clickVisitor(target.actor);
+        else this.clickCat(target.actor);
+        break;
+      case "gift": {
+        const view = target.view;
+        const x = this.giftX(view);
+        const y = this.groundY - 5 * s;
+        const res = this.actions.collectGift(view.gift.id);
+        if (res) {
+          this.fx.stars(x, y, 10);
+          this.fx.ring(x, y);
+          this.actions.sound("pop");
+        }
+        break;
+      }
+      case "sparkle": {
+        const pos = this.sparkle ? { x: this.sparkle.x, y: this.sparkle.y } : null;
+        const reward = this.actions.catchSparkle();
+        if (reward > 0 && pos) {
+          this.fx.stars(pos.x, pos.y, 8);
+          this.fx.text(pos.x, pos.y - 10, `+${formatFish(reward)} ikan`);
+          this.actions.sound("coin");
+        }
+        break;
+      }
+      case "facility": {
+        const hidden = this.hiddenIn(target.id);
+        if (hidden) {
+          // Ketahuan! Kucing melompat keluar dari kardus.
+          hidden.cancelTask();
+          hidden.emote("exclaim", 1, false);
+          hidden.jumpDown(() => hidden.setMode("happy", 1.2));
+          this.actions.sound("meow");
+          break;
+        }
+        this.actions.openFacility(target.id);
+        break;
+      }
+    }
+  }
+
+  private clickVisitor(v: CatActor): void {
+    const fed = this.actions.feedVisitor();
+    const head = v.headPos();
+    this.fx.hearts(head.x, head.y, 2);
+    this.fx.text(head.x, head.y - 8, `${Math.min(fed, 3)}/3`, 0xffc2cf);
+    if (v.mode === "wait") v.setMode("happy", 0.9, () => v.setMode("wait"));
+  }
+
+  private clickCat(a: CatActor): void {
+    const now = Date.now();
+    a.clicks = a.clicks.filter((t) => now - t < CLICK_WINDOW_MS);
+    a.clicks.push(now);
+    if (a.mode === "angry" || a.airborne || a.hidden) return;
+
+    if (this.treatMode && this.giveTreat(a)) return;
+
+    if (a.mode === "sulk") {
+      a.emote("anger", 1, false);
+      this.actions.sound("hiss");
+      this.actions.tip("sulk", "Dia sedang ngambek. Usap-usap pelan dengan kursor, atau bujuk dengan camilan.");
+      return;
+    }
+    if (a.clicks.length >= CLICKS_TO_ANGER) {
+      this.makeAngry(a);
+      return;
+    }
+
+    this.actions.pet(a.id);
+    const head = a.headPos();
+    this.fx.hearts(head.x, head.y, 3);
+    if (a.mode === "sleep") {
+      a.cancelTask();
+      a.emote("exclaim", 0.9, false);
+      a.setMode("startled", 0.5, () => a.setMode("happy", 1.4));
+      return;
+    }
+    if (a.mode === "purr" || a.mode === "treat" || a.mode === "land") return;
+    a.cancelTask();
+    a.setMode("happy", 1.6);
+    if (a.clicks.length === CLICKS_TO_ANGER - 2) a.emote("anger", 0.8, false);
+  }
+
+  private makeAngry(a: CatActor): void {
+    a.cancelTask();
+    a.clicks = [];
+    a.rub = 0;
+    a.emote("anger", 1.6, false);
+    this.actions.sound("hiss");
+    this.actions.tip("angry", "Dia kesal karena diganggu terus. Biarkan sebentar, usap pelan, atau beri camilan.");
+    a.setMode("angry", 1.3, () => this.flee(a));
+  }
+
+  private flee(a: CatActor): void {
+    // Selama kabur dan ngambek, mainan dan camilan tidak bisa menarik perhatiannya
+    // (kecuali camilan diberikan langsung dengan klik).
+    a.task = "flee";
+    const sulk = () =>
+      a.setMode("sulk", undefined, () => {
+        a.task = null;
+        a.needsDecision = true;
+      });
+    if (a.spot) {
+      if (this.cursor) a.dir = this.cursor.x > a.x ? -1 : 1;
+      sulk();
+      return;
+    }
+    const s = this.pixelScale;
+    const away: 1 | -1 = this.cursor ? (a.x >= this.cursor.x ? 1 : -1) : Math.random() < 0.5 ? 1 : -1;
+    const [minX, maxX] = this.walkRange();
+    let tx = a.x + away * rand(50, 90) * s;
+    // Mentok di tepi: lari ke arah sebaliknya, tetap membelakangi kursor di akhir.
+    if (tx < minX || tx > maxX) tx = clamp(tx, minX, maxX);
+    a.walkTo(
+      tx,
+      () => {
+        a.dir = away;
+        sulk();
+      },
+      true,
+    );
+  }
+
+  private giveTreat(a: CatActor): boolean {
+    if (this.game.state.inventory.treats <= 0) {
+      this.setTreatMode(false);
+      this.actions.modesChanged();
+      return false;
+    }
+    const wasSulking = a.mode === "sulk";
+    if (!this.actions.treat(a.id)) return false;
+    a.cancelTask();
+    if (this.cursor) a.face(this.cursor.x);
+    const head = a.headPos();
+    this.fx.hearts(head.x, head.y, 3);
+    if (wasSulking) this.fx.text(head.x, head.y - 6, "Sudah baikan ♥", 0xffc2cf, 13);
+    a.emote("heart", 1.6);
+    a.setMode("treat", 1.8, () => a.setMode("happy", 1.2));
+    a.clicks = [];
+    this.actions.sound("crunch");
+    if (this.game.state.inventory.treats <= 0) {
+      this.setTreatMode(false);
+      this.actions.modesChanged();
+      this.actions.tip("treats-out", "Camilan habis. Beli lagi di Toko.");
+    }
+    return true;
+  }
+
+  private purr(a: CatActor): void {
+    const gained = this.actions.purr(a.id);
+    const head = a.headPos();
+    if (a.mode === "sulk") this.fx.text(head.x, head.y - 6, "Sudah baikan ♥", 0xffc2cf, 13);
+    if (a.mode === "sleep") {
+      this.fx.notes(head.x, head.y, 2);
+      a.extendMode(10);
+    } else if (!a.airborne && !a.hidden && a.mode !== "treat") {
+      a.cancelTask();
+      a.setMode("purr", 4.5);
+    }
+    if (gained) {
+      this.fx.hearts(head.x, head.y, 2);
+      a.emote("heart", 1.6);
+    }
+    this.actions.sound("purr");
+    this.actions.tip("purr", "Prrr... Usapan memberi ikatan lebih banyak daripada klik. Ikatan menambah produksi kucing.");
   }
 
   // -------------------------------------------------------------------------
-  // Hover dan uji klik (untuk klik tembus)
+  // Uji klik
 
-  private actorAt(x: number, y: number): CatActor | null {
-    const all = [...this.cats.values()];
-    if (this.visitor) all.push(this.visitor);
-    for (let i = all.length - 1; i >= 0; i--) {
-      const b = all[i].sprite.getBounds();
-      if (x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY) return all[i];
+  private residents(): CatActor[] {
+    return [...this.cats.values()];
+  }
+
+  private actorAt(x: number, y: number, includeVisitor = true): CatActor | null {
+    const list = this.residents();
+    if (includeVisitor && this.visitor) list.push(this.visitor);
+    let best: CatActor | null = null;
+    let bestZ = -Infinity;
+    const pad = this.pixelScale;
+    for (const a of list) {
+      if (a.removed || a.hidden || a === this.dragging) continue;
+      if (a.contains(x, y, pad) && a.container.zIndex > bestZ) {
+        best = a;
+        bestZ = a.container.zIndex;
+      }
+    }
+    return best;
+  }
+
+  private giftAt(x: number, y: number): GiftView | null {
+    const pad = 3 * this.pixelScale;
+    for (const view of this.gifts.values()) {
+      if (!view.revealed) continue;
+      const b = view.sprite.getBounds();
+      if (x >= b.minX - pad && x <= b.maxX + pad && y >= b.minY - pad && y <= b.maxY + pad) return view;
     }
     return null;
   }
 
-  hitTest(x: number, y: number): boolean {
-    if (this.actorAt(x, y)) return true;
-    if (this.sparkle) {
-      const b = this.sparkle.getBounds();
-      if (x >= b.minX - 6 && x <= b.maxX + 6 && y >= b.minY - 6 && y <= b.maxY + 6) return true;
-    }
-    for (const v of this.facilities.values()) {
-      const b = v.sprite.getBounds();
-      if (x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY) return true;
-    }
-    return false;
+  private sparkleAt(x: number, y: number): boolean {
+    if (!this.sparkle) return false;
+    const b = this.sparkle.getBounds();
+    const pad = 2 * this.pixelScale;
+    return x >= b.minX - pad && x <= b.maxX + pad && y >= b.minY - pad && y <= b.maxY + pad;
   }
 
-  setHover(x: number | null, y: number | null): void {
-    const actor = x === null || y === null ? null : this.actorAt(x, y);
-    if (!actor) {
-      this.hoverLabel.visible = false;
+  private facilityAt(x: number, y: number): FacilityId | null {
+    for (const v of this.facilities.values()) {
+      const b = v.sprite.getBounds();
+      if (x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY) return v.id;
+    }
+    return null;
+  }
+
+  /** Fasilitas di bawah kucing yang sedang diangkat (area lebih longgar). */
+  private facilityDropAt(x: number, y: number): FacilityId | null {
+    const s = this.pixelScale;
+    for (const v of this.facilities.values()) {
+      const b = v.sprite.getBounds();
+      if (x >= b.minX - 4 * s && x <= b.maxX + 4 * s && y <= this.groundY + 4) return v.id;
+    }
+    return null;
+  }
+
+  private targetAt(x: number, y: number): PressTarget | null {
+    const actor = this.actorAt(x, y);
+    if (actor) return { kind: "actor", actor };
+    const gift = this.giftAt(x, y);
+    if (gift) return { kind: "gift", view: gift };
+    if (this.sparkleAt(x, y)) return { kind: "sparkle" };
+    const fid = this.facilityAt(x, y);
+    if (fid) return { kind: "facility", id: fid };
+    return null;
+  }
+
+  /** Sedang menekan/menyeret: jendela harus tetap menangkap mouse di mana pun kursornya. */
+  isCapturing(): boolean {
+    return this.press !== null || this.dragging !== null;
+  }
+
+  /** Untuk klik tembus: true bila titik ini harus ditangkap jendela. */
+  hitTest(x: number, y: number): boolean {
+    if (this.dragging || this.press) return true;
+    return this.targetAt(x, y) !== null;
+  }
+
+  private hiddenIn(fid: FacilityId): CatActor | null {
+    for (const a of this.cats.values()) if (a.hidden && a.spot?.facility === fid) return a;
+    return null;
+  }
+
+  catPosition(catId: string): { x: number; y: number } | null {
+    const a = catId === "visitor" ? this.visitor : this.cats.get(catId);
+    return a ? a.headPos() : null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Perintah dari UI
+
+  /** Panggil kucing: ia berlari mendekat ke kursor (atau tengah strip). */
+  callCat(catId: string): void {
+    const a = this.cats.get(catId);
+    if (!a || a.airborne) return;
+    const s = this.pixelScale;
+    const [minX, maxX] = this.walkRange();
+    a.cancelTask();
+    a.task = "call";
+    a.emote("exclaim", 0.8, false);
+    const go = () => {
+      const target = clamp(this.cursor?.x ?? (minX + maxX) / 2, minX, maxX);
+      a.walkTo(
+        target + (a.x < target ? -12 : 12) * s,
+        () => {
+          a.task = null;
+          a.face(target);
+          a.setMode("sit", 4);
+          a.emote("heart", 1.8);
+          this.actions.sound("meow");
+        },
+        true,
+      );
+    };
+    if (a.spot || a.hidden) a.jumpDown(go, this.cursor?.x);
+    else go();
+  }
+
+  /** Setelah tombol "Beri makan": semua kucing berlari ke mangkuk. */
+  private feedingTime(): void {
+    const bowl = this.facilities.get("mangkuk");
+    for (const a of this.cats.values()) {
+      if (a.airborne || a === this.dragging) continue;
+      const head = a.headPos();
+      this.fx.hearts(head.x, head.y, 1);
+      if (!bowl) continue;
+      a.cancelTask();
+      if (a.spot || a.hidden) a.jumpDown(() => this.goEat(a, true), bowl.x);
+      else this.goEat(a, true);
+    }
+  }
+
+  /** Fasilitas baru: kucing terdekat datang memeriksa. */
+  private curiousAbout(fid: FacilityId): void {
+    const view = this.facilities.get(fid);
+    if (!view) return;
+    const candidates = this.residents().filter((a) => a.interruptible && !a.task && !a.spot);
+    candidates.sort((p, q) => Math.abs(p.x - view.x) - Math.abs(q.x - view.x));
+    const a = candidates[0];
+    if (!a) return;
+    a.emote("exclaim", 1, false);
+    window.setTimeout(() => {
+      if (a.removed || a.task || a.airborne) return;
+      this.facilityActivity(a, fid);
+    }, 600);
+  }
+
+  // -------------------------------------------------------------------------
+  // Keputusan kucing
+
+  private decide(a: CatActor): void {
+    a.needsDecision = false;
+    // Kucing yang perlu keputusan baru tidak sedang menuju tempat mana pun.
+    a.claim = null;
+    if (a.isVisitor) {
+      if (a.mode !== "wait" && a.mode !== "arrive" && a.mode !== "leave") a.setMode("wait");
       return;
     }
-    let label: string;
-    if (actor.isVisitor) {
-      const v = this.game.state.visitor;
-      const fed = v?.fed ?? 0;
-      label = fed >= 3 ? "Mau tinggal di sini!" : `Kucing liar · beri makan (${fed}/3)`;
-    } else {
-      const cat = this.game.state.cats.find((c) => c.id === actor.id);
-      label = cat ? (isHungry(cat) ? `${cat.name} · lapar` : cat.name) : "";
+    switch (a.task) {
+      case "hunt":
+        this.huntStep(a);
+        return;
+      case "beg":
+        this.begStep(a);
+        return;
+      case "butterfly":
+        this.butterflyStep(a);
+        return;
+      case null:
+        break;
+      default:
+        // Tugas lain selesai lewat callback; sisanya dianggap selesai.
+        a.task = null;
+        a.claim = null;
+        break;
     }
-    this.hoverLabel.text = label;
-    this.hoverLabel.position.set(Math.round(actor.x), Math.round(actor.headY() - 4));
-    this.hoverLabel.visible = label.length > 0;
+    this.decideFree(a);
+  }
+
+  private decideFree(a: CatActor): void {
+    const cat = this.game.cat(a.id);
+    if (!cat) return;
+    const s = this.pixelScale;
+    if (a.spot?.kind === "box" || a.hidden) {
+      a.jumpDown();
+      return;
+    }
+    if (a.spot) {
+      if (Math.random() < 0.55) this.perchActivity(a);
+      else a.jumpDown();
+      return;
+    }
+    const now = Date.now();
+    const focus = this.focusMode;
+    const night = isNight(this.hour);
+    if (this.facilities.has("mangkuk") && cat.hunger < 0.5 && Math.random() < 0.7) {
+      this.goEat(a);
+      return;
+    }
+    const home = cat.facility && this.facilities.has(cat.facility) ? cat.facility : null;
+    const owned = FACILITY_IDS.filter((id) => this.facilities.has(id));
+    const pick = pickWeighted({
+      home: home ? 32 : 0,
+      explore: owned.length > 0 && !focus ? 7 : 0,
+      wander: focus ? 6 : 20,
+      sit: 16,
+      groom: 9,
+      sleep: focus ? 40 : night ? 28 : 9,
+      idle: 7,
+      zoomies: !focus && !night && now - this.lastZoomies > 45_000 ? 2.5 : 0,
+      think: focus ? 0 : 6,
+      visit: !focus && heartCount(cat) >= 2 && this.cursor ? 3 : 0,
+    });
+    const [minX, maxX] = this.walkRange();
+    switch (pick) {
+      case "home":
+        if (!this.facilityActivity(a, home!)) a.setMode("sit");
+        break;
+      case "explore":
+        if (!this.facilityActivity(a, owned[Math.floor(Math.random() * owned.length)])) a.setMode("sit");
+        break;
+      case "wander": {
+        const homeX = home ? this.facilityX(home) : null;
+        a.walkTo(homeX !== null ? homeX + rand(-140, 140) : rand(minX, maxX));
+        break;
+      }
+      case "zoomies":
+        this.zoomies(a);
+        break;
+      case "think":
+        a.setMode("sit", rand(3, 6));
+        a.emote(this.thought(cat), 2);
+        break;
+      case "visit": {
+        const cx = clamp(this.cursor?.x ?? a.x, minX, maxX);
+        a.walkTo(cx + (a.x < cx ? -14 : 14) * s, () => {
+          if (this.cursor) a.face(this.cursor.x);
+          a.setMode("sit", 4);
+          a.emote("heart", 1.8);
+          this.actions.sound("meow");
+        });
+        break;
+      }
+      default:
+        a.setMode(pick);
+        break;
+    }
+  }
+
+  private thought(cat: CatState): ObjectId {
+    if (cat.hunger < 0.6) return "fish";
+    if (isNight(this.hour) && Math.random() < 0.5) return "zzz";
+    const options: ObjectId[] = ["note", "question", "leaf", "star", "feather"];
+    if (heartCount(cat) >= 2) options.push("heart", "heart");
+    return options[Math.floor(Math.random() * options.length)];
+  }
+
+  private goEat(a: CatActor, run = false): void {
+    const bowl = this.facilities.get("mangkuk");
+    if (!bowl) {
+      a.setMode("sit");
+      return;
+    }
+    const s = this.pixelScale;
+    const side = a.x < bowl.x ? -1 : 1;
+    const cat = this.game.cat(a.id);
+    a.walkTo(
+      bowl.x + side * 12 * s,
+      () => {
+        a.face(bowl.x);
+        a.setMode("eat", cat && cat.hunger > 0.95 ? rand(1.5, 3) : undefined);
+      },
+      run,
+    );
+  }
+
+  private facilityActivity(a: CatActor, fid: FacilityId): boolean {
+    const view = this.facilities.get(fid);
+    if (!view) return false;
+    const s = this.pixelScale;
+    const side = a.x < view.x ? -1 : 1;
+    const half = (view.sprite.texture.width * s) / 2;
+    const sitBeside = (mode: "sit" | "watch" = "sit") =>
+      a.walkTo(view.x + side * (half + 8 * s), () => {
+        a.face(view.x);
+        a.setMode(mode);
+      });
+
+    switch (fid) {
+      case "mangkuk":
+        this.goEat(a);
+        return true;
+      case "benang":
+        a.walkTo(view.x + side * (half + 6 * s), () => {
+          a.face(view.x);
+          a.setMode("play", rand(2.5, 4.5));
+        });
+        return true;
+      case "akuarium":
+        if (Math.random() < 0.5) {
+          a.walkTo(view.x + side * (half + 7 * s), () => {
+            a.face(view.x);
+            a.setMode("watch", rand(6, 12));
+            if (Math.random() < 0.5) a.emote("fish", 1.6);
+          });
+          return true;
+        }
+        break;
+      default:
+        break;
+    }
+
+    const defs = SPOTS[fid];
+    if (!defs) {
+      sitBeside();
+      return true;
+    }
+    const free = defs
+      .map((d, index): SpotRef => ({ facility: fid, index, kind: d.kind }))
+      .filter((ref) => this.spotFree(ref, a));
+    if (free.length === 0) {
+      sitBeside(fid === "akuarium" ? "watch" : "sit");
+      return true;
+    }
+    const spot = free[Math.floor(Math.random() * free.length)];
+    a.claim = spotKey(spot);
+    a.walkTo(view.x + side * (half + 4 * s), () => {
+      if (!this.spotFree(spot, a)) {
+        a.claim = null;
+        a.setMode("sit");
+        return;
+      }
+      const ok = a.jumpToSpot(spot, () => {
+        a.claim = null;
+        if (spot.kind === "box") {
+          a.setMode("hidden", rand(15, 40));
+          this.fx.dust(a.x, a.y, 3);
+        } else this.perchActivity(a);
+      });
+      if (!ok) {
+        a.claim = null;
+        a.needsDecision = true;
+      }
+    });
+    return true;
+  }
+
+  private perchActivity(a: CatActor): void {
+    const fid = a.spot?.facility;
+    if (!fid) {
+      a.needsDecision = true;
+      return;
+    }
+    const mode =
+      fid === "rak"
+        ? pickWeighted({ sleep: 65, groom: 15, sit: 20 })
+        : fid === "akuarium"
+          ? pickWeighted({ watch: 55, sit: 20, sleep: 25 })
+          : pickWeighted({ sit: 35, sleep: 30, groom: 20, watch: 15 });
+    a.setMode(mode, mode === "sleep" && fid === "rak" ? rand(30, 70) : undefined);
+    if (mode === "watch" && fid === "akuarium" && Math.random() < 0.4) a.emote("fish", 1.6);
+  }
+
+  private zoomies(a: CatActor): void {
+    a.task = "zoomies";
+    this.lastZoomies = Date.now();
+    a.emote("exclaim", 0.8, false);
+    let legs = 3 + Math.floor(Math.random() * 3);
+    const next = () => {
+      if (a.task !== "zoomies") return;
+      if (legs-- <= 0) {
+        a.task = null;
+        a.setMode("sit", rand(1.5, 3), () => a.setMode("groom"));
+        return;
+      }
+      const [minX, maxX] = this.walkRange();
+      const mid = (minX + maxX) / 2;
+      a.walkTo(a.x < mid ? rand(mid, maxX) : rand(minX, mid), next, true);
+    };
+    next();
+  }
+
+  // -------------------------------------------------------------------------
+  // Mainan bulu
+
+  private huntStep(a: CatActor): void {
+    const f = this.feather;
+    const s = this.pixelScale;
+    if (!f.visible) {
+      a.task = null;
+      this.decideFree(a);
+      return;
+    }
+    const dx = f.x - a.x;
+    if (a.hidden) {
+      // Menyergap dari dalam kardus bila bulunya lewat dekat.
+      if (Math.abs(dx) < 40 * s) {
+        a.emote("exclaim", 0.8, false);
+        a.jumpDown(undefined, f.x);
+      } else a.setMode("hidden", 1);
+      return;
+    }
+    if (a.spot) {
+      if (Math.abs(dx) < 45 * s && f.y > a.y - 12 * s) this.pounce(a);
+      else {
+        a.face(f.x);
+        a.setMode("watch", rand(0.6, 1.2));
+      }
+      return;
+    }
+    const height = this.groundY - f.y;
+    const [minX, maxX] = this.walkRange();
+    if (height > 55 * s) {
+      a.face(f.x);
+      const goal = clamp(f.x - Math.sign(dx) * 10 * s, minX, maxX);
+      if (Math.abs(dx) > 30 * s && Math.abs(goal - a.x) > 4 * s) a.walkTo(goal);
+      else if (Math.abs(dx) <= 30 * s && height < 72 * s && Math.random() < 0.35) this.pounce(a);
+      else a.setMode("watch", rand(0.6, 1.2));
+      return;
+    }
+    if (Math.abs(dx) > 24 * s) {
+      const goal = clamp(f.x - Math.sign(dx) * 16 * s, minX, maxX);
+      // Bulu di luar jangkauan (misalnya di atas panel): tunggu sambil menatap.
+      if (Math.abs(goal - a.x) <= 4 * s) {
+        a.face(f.x);
+        a.setMode("watch", rand(0.6, 1.2));
+      } else a.walkTo(goal, undefined, true);
+      return;
+    }
+    a.face(f.x);
+    a.setMode("stalk", rand(0.4, 1), () => this.pounce(a));
+  }
+
+  private caught = new Set<CatActor>();
+
+  private pounce(a: CatActor): void {
+    const f = this.feather;
+    const s = this.pixelScale;
+    if (!f.visible || a.task !== "hunt") {
+      a.needsDecision = true;
+      return;
+    }
+    const [minX, maxX] = this.walkRange();
+    const tx = clamp(f.x + f.vx * 0.25, Math.max(minX, a.x - 55 * s), Math.min(maxX, a.x + 55 * s));
+    const startY = a.y;
+    // Puncak lompatan kira-kira setinggi bulu (mulut ±10 piksel sprite di atas kaki).
+    const apex = clamp(Math.min(startY, this.groundY) - (f.y + 10 * s), 6 * s, 55 * s);
+    a.spot = null;
+    this.caught.delete(a);
+    a.leapTo(
+      tx,
+      this.groundY,
+      () => {
+        if (this.caught.has(a)) {
+          this.caught.delete(a);
+          a.setMode("proud", 1.3);
+        } else {
+          a.setMode("land", 0.3, () => {
+            if (Math.random() < 0.3) a.emote("question", 1.1, false);
+            a.needsDecision = true;
+          });
+        }
+        this.fx.dust(a.x, a.y, 3);
+      },
+      apex,
+    );
+  }
+
+  private catchFeather(a: CatActor): void {
+    const f = this.feather;
+    f.grab(a);
+    this.caught.add(a);
+    const reward = this.actions.toyCatch(a.id);
+    const head = a.headPos();
+    this.fx.stars(head.x, head.y, 6);
+    if (reward > 0) {
+      this.fx.text(head.x, head.y - 4 * this.pixelScale, `+${formatFish(reward)} ikan`);
+      this.actions.sound("coin");
+    } else this.actions.sound("chirp");
+  }
+
+  private updateToy(dt: number): void {
+    const s = this.pixelScale;
+    const f = this.feather;
+    const anchor = this.toyMode && this.cursor && !this.dragging ? this.cursor : null;
+    f.update(dt, anchor, s, this.groundY);
+    const residents = this.residents();
+    if (!f.visible) {
+      for (const a of residents) {
+        if (a.task === "hunt" && !a.airborne) {
+          a.cancelTask();
+          a.needsDecision = true;
+        }
+      }
+      return;
+    }
+    const canHunt = (a: CatActor) =>
+      !a.airborne &&
+      a !== this.dragging &&
+      (a.task === null || a.task === "hunt" || a.task === "beg") &&
+      !["angry", "sulk", "treat", "purr", "startled"].includes(a.mode);
+    // Pemburu yang sedang melompat tetap dihitung, agar kursi tidak berpindah-pindah.
+    const hunters = residents.filter((a) => a.task === "hunt" && (a.airborne || canHunt(a)));
+    for (const a of residents) {
+      if (a.task === "hunt" && !hunters.includes(a)) {
+        a.cancelTask();
+        a.needsDecision = true;
+      }
+    }
+    const dist = (a: CatActor) => Math.abs(a.x - f.x);
+    const candidates = residents.filter((a) => a.task !== "hunt" && canHunt(a)).sort((p, q) => dist(p) - dist(q));
+    const recruit = (a: CatActor) => {
+      a.cancelTask();
+      a.task = "hunt";
+      a.needsDecision = true;
+      hunters.push(a);
+    };
+    while (hunters.length < MAX_HUNTERS && candidates.length > 0) recruit(candidates.shift()!);
+    // Tukar pemburu terjauh hanya bila penantang jauh lebih dekat.
+    const grounded = hunters.filter((a) => !a.airborne).sort((p, q) => dist(q) - dist(p));
+    if (candidates.length > 0 && grounded.length > 0 && dist(candidates[0]) + 60 * s < dist(grounded[0])) {
+      const out = grounded[0];
+      hunters.splice(hunters.indexOf(out), 1);
+      out.cancelTask();
+      out.face(f.x);
+      out.setMode("watch", rand(2, 4));
+      recruit(candidates.shift()!);
+    }
+    for (const a of residents) {
+      if (a.task !== "hunt" && !a.task && (a.mode === "sit" || a.mode === "idle") && Math.abs(a.x - f.x) < 300 * s) {
+        a.setMode("watch", rand(3, 6));
+      }
+      if (a.task === "hunt" || a.mode === "watch") {
+        if (a.mode === "run") a.retarget(f.x - Math.sign(f.x - a.x) * 16 * s);
+        if (a.mode === "watch" || a.mode === "stalk") a.face(f.x);
+      }
+      if (a.task === "hunt" && a.mode === "leap" && !f.heldBy) {
+        const m = a.mouthPos();
+        if (Math.hypot(m.x - f.x, m.y - f.y) < 12 * s) this.catchFeather(a);
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Camilan di kursor
+
+  /** Urutan kucing pengemis di sisi kursor yang sama (0 = paling dekat). */
+  private begIndex(a: CatActor): number {
+    const cx = this.cursor!.x;
+    const side = Math.sign(a.x - cx);
+    return this.residents().filter(
+      (o) => o !== a && o.task === "beg" && !o.spot && Math.sign(o.x - cx) === side && Math.abs(o.x - cx) < Math.abs(a.x - cx),
+    ).length;
+  }
+
+  /** Tempat duduk mengemis: berjajar di samping kursor, di dalam area jalan. */
+  private begX(a: CatActor): number {
+    const s = this.pixelScale;
+    const cx = this.cursor!.x;
+    const side = a.x < cx ? -1 : 1;
+    const [minX, maxX] = this.walkRange();
+    return clamp(cx + side * (12 + this.begIndex(a) * 14) * s, minX, maxX);
+  }
+
+  private begStep(a: CatActor): void {
+    if (!this.cursor || !this.treatMode) {
+      a.task = null;
+      this.decideFree(a);
+      return;
+    }
+    if (a.spot || a.hidden) {
+      if (a.hidden) {
+        a.jumpDown(undefined, this.cursor.x);
+        return;
+      }
+      a.face(this.cursor.x);
+      a.setMode("beg");
+      return;
+    }
+    const target = this.begX(a);
+    if (Math.abs(a.x - target) > 8 * this.pixelScale) {
+      a.walkTo(target, undefined, Math.abs(a.x - target) > 50 * this.pixelScale);
+      return;
+    }
+    a.face(this.cursor.x);
+    const entering = a.mode !== "beg";
+    a.setMode("beg");
+    if (entering && Math.random() < 0.4) a.emote(Math.random() < 0.5 ? "heart" : "treat", 1.4);
+  }
+
+  private updateTreat(now: number): void {
+    const s = this.pixelScale;
+    const show = this.treatMode && this.cursor !== null && !this.dragging;
+    this.treatCursor.visible = show;
+    const residents = this.residents();
+    if (!show) {
+      for (const a of residents) {
+        if (a.task === "beg" && !a.airborne) {
+          a.cancelTask();
+          a.needsDecision = true;
+        }
+      }
+      return;
+    }
+    const c = this.cursor!;
+    this.treatCursor.scale.set(s * 0.8);
+    this.treatCursor.position.set(Math.round(c.x + 5 * s), Math.round(c.y + 6 * s + Math.sin(now / 250) * s));
+    for (const a of residents) {
+      const eligible =
+        !a.airborne &&
+        a !== this.dragging &&
+        (a.task === null || a.task === "beg") &&
+        !["angry", "sulk", "treat", "purr", "startled", "land"].includes(a.mode);
+      const near = Math.abs(a.x - c.x) < 220 * s;
+      if (eligible && near && a.task !== "beg") {
+        a.cancelTask();
+        a.task = "beg";
+        a.needsDecision = true;
+      } else if (a.task === "beg" && (!near || !eligible)) {
+        if (!a.airborne) {
+          a.cancelTask();
+          a.needsDecision = true;
+        }
+      }
+      if (a.task === "beg") {
+        if (a.mode === "beg") {
+          a.face(c.x);
+          // Kursor pindah jauh: cari tempat duduk baru (dengan jeda kecil agar tidak gelisah).
+          if (!a.spot && a.modeTime > 0.4 && Math.abs(a.x - this.begX(a)) > 16 * s) a.needsDecision = true;
+        }
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Kupu-kupu
+
+  private butterflyStep(a: CatActor): void {
+    const b = this.ambient.butterfly;
+    const s = this.pixelScale;
+    if (!b || b.done || this.toyMode) {
+      a.task = null;
+      this.decideFree(a);
+      return;
+    }
+    const dx = b.x - a.x;
+    if (Math.abs(dx) > 22 * s) {
+      const [minX, maxX] = this.walkRange();
+      const goal = clamp(b.x - Math.sign(dx) * 14 * s, minX, maxX);
+      if (Math.abs(goal - a.x) <= 4 * s) {
+        // Kupu-kupu terbang di luar jangkauan: menyerah dan menatapnya saja.
+        a.task = null;
+        a.face(b.x);
+        a.setMode("watch", rand(2, 4));
+      } else a.walkTo(goal, undefined, true);
+      return;
+    }
+    a.face(b.x);
+    a.setMode("stalk", rand(0.4, 0.8), () => {
+      const bb = this.ambient.butterfly;
+      if (!bb || a.task !== "butterfly") {
+        a.needsDecision = true;
+        return;
+      }
+      const apex = clamp(this.groundY - (bb.y + 10 * s), 6 * s, 50 * s);
+      const [minX, maxX] = this.walkRange();
+      a.leapTo(clamp(bb.x, minX, maxX), this.groundY, () => {
+        a.task = null;
+        a.setMode("land", 0.3, () => {
+          a.emote("question", 1.4, false);
+          a.setMode("sit", rand(2, 4));
+        });
+      }, apex);
+      window.setTimeout(() => bb.scare(), 180);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Sutradara: interaksi antar-kucing, sapaan tamu, kupu-kupu
+
+  private freeForSocial(a: CatActor): boolean {
+    return !a.task && !a.spot && !a.hidden && !a.airborne && a !== this.dragging && ["idle", "sit", "groom", "watch", "happy"].includes(a.mode);
+  }
+
+  private updateDirector(dt: number): void {
+    this.directorTimer -= dt;
+    if (this.directorTimer > 0) return;
+    this.directorTimer = 1.5;
+    const s = this.pixelScale;
+    const residents = this.residents();
+
+    // Kupu-kupu yang terbang rendah menarik perhatian.
+    const b = this.ambient.butterfly;
+    if (b && !this.toyMode && !this.treatMode && this.groundY - b.y < 48 * s && !residents.some((a) => a.task === "butterfly")) {
+      const hunter = residents
+        .filter((a) => this.freeForSocial(a) && Math.abs(a.x - b.x) < 220 * s)
+        .sort((p, q) => Math.abs(p.x - b.x) - Math.abs(q.x - b.x))[0];
+      if (hunter && Math.random() < 0.5) {
+        hunter.task = "butterfly";
+        hunter.emote("exclaim", 0.7, false);
+        this.butterflyStep(hunter);
+      }
+    }
+
+    // Menyapa tamu yang menunggu.
+    const v = this.visitor;
+    if (v && v.mode === "wait" && !this.greetedVisitor && Math.random() < 0.3) {
+      const greeter = residents.filter((a) => this.freeForSocial(a)).sort((p, q) => Math.abs(p.x - v.x) - Math.abs(q.x - v.x))[0];
+      if (greeter) {
+        this.greetedVisitor = true;
+        greeter.task = "greet";
+        greeter.walkTo(v.x - 10 * s, () => {
+          greeter.task = null;
+          if (this.visitor !== v) return;
+          greeter.face(v.x);
+          greeter.setMode("boop", 1.6, () => greeter.setMode("happy", 1.2));
+          const head = greeter.headPos();
+          this.fx.hearts(head.x + 4 * s, head.y + 4 * s, 2);
+          this.actions.sound("chirp");
+        });
+      }
+    }
+
+    if (this.toyMode || this.treatMode) return;
+    const chance = this.focusMode ? 0.03 : 0.12;
+    if (Math.random() > chance) return;
+    const free = residents.filter((a) => this.freeForSocial(a));
+    if (free.length < 2) return;
+    const a = free[Math.floor(Math.random() * free.length)];
+    const b2 = free
+      .filter((o) => o !== a && Math.abs(o.x - a.x) < 320 * s)
+      .sort((p, q) => Math.abs(p.x - a.x) - Math.abs(q.x - a.x))[0];
+    if (!b2) return;
+    const night = isNight(this.hour);
+    const type = this.focusMode
+      ? "cuddle"
+      : pickWeighted<SocialType>({ boop: 40, groom: 25, playfight: night ? 5 : 20, cuddle: night ? 40 : 12 });
+    this.startSocial(a, b2, type);
+  }
+
+  private startSocial(p: CatActor, q: CatActor, type: SocialType): void {
+    const s = this.pixelScale;
+    const left = p.x <= q.x ? p : q;
+    const right = left === p ? q : p;
+    left.cancelTask();
+    right.cancelTask();
+    left.task = "social";
+    right.task = "social";
+    const gap = (type === "cuddle" ? 8 : type === "groom" ? 8 : 10) * s;
+    const [minX, maxX] = this.walkRange();
+    const mid = clamp((left.x + right.x) / 2, minX + gap, maxX - gap);
+    const soc: Social = { type, a: left, b: right, arrived: 0, acting: false, fxTimer: 0 };
+    this.socials.push(soc);
+    const arrive = (actor: CatActor, faceX: number) => () => {
+      if (actor.task !== "social") return;
+      actor.face(faceX);
+      soc.arrived += 1;
+      if (soc.arrived >= 2) this.actSocial(soc);
+      else actor.setMode("sit", 10, () => this.endSocial(soc));
+    };
+    left.walkTo(mid - gap, arrive(left, mid + 100));
+    right.walkTo(mid + gap, arrive(right, mid - 100));
+  }
+
+  private actSocial(soc: Social): void {
+    const { a, b } = soc;
+    if (a.task !== "social" || b.task !== "social" || a.airborne || b.airborne || a.removed || b.removed) {
+      this.endSocial(soc);
+      return;
+    }
+    soc.acting = true;
+    const s = this.pixelScale;
+    const done = () => this.endSocial(soc);
+    const midX = (a.x + b.x) / 2;
+    switch (soc.type) {
+      case "boop": {
+        a.setMode("boop", 1.6, done);
+        b.setMode("boop", 1.6);
+        this.fx.hearts(midX, a.headPos().y + 3 * s, 2);
+        this.actions.sound("chirp");
+        break;
+      }
+      case "groom": {
+        const groomer = Math.random() < 0.5 ? a : b;
+        const other = groomer === a ? b : a;
+        groomer.setMode("groom", 4, done);
+        other.setMode("purr", 4);
+        break;
+      }
+      case "playfight":
+        a.setMode("playfight", 3.2, done);
+        b.setMode("playfight", 3.2);
+        break;
+      case "cuddle": {
+        a.dir = -1;
+        b.dir = 1;
+        const duration = rand(20, 40);
+        a.setMode("sleep", duration, done);
+        b.setMode("sleep", duration);
+        a.emote("heart", 2);
+        break;
+      }
+    }
+  }
+
+  private endSocial(soc: Social): void {
+    const i = this.socials.indexOf(soc);
+    if (i >= 0) this.socials.splice(i, 1);
+    for (const x of [soc.a, soc.b]) {
+      if (x.task !== "social") continue;
+      x.task = null;
+      if (x.airborne) continue;
+      x.setMode(soc.type === "boop" || soc.type === "groom" ? "happy" : "sit", rand(1.2, 3));
+    }
+  }
+
+  private updateSocials(dt: number): void {
+    const s = this.pixelScale;
+    for (const soc of [...this.socials]) {
+      const { a, b } = soc;
+      if (a.task !== "social" || b.task !== "social" || a.removed || b.removed) {
+        const i = this.socials.indexOf(soc);
+        if (i >= 0) this.socials.splice(i, 1);
+        for (const x of [a, b]) {
+          if (x.task === "social") {
+            x.cancelTask();
+            x.needsDecision = true;
+          }
+        }
+        continue;
+      }
+      if (soc.acting && soc.type === "playfight") {
+        soc.fxTimer -= dt;
+        if (soc.fxTimer <= 0) {
+          soc.fxTimer = 0.45;
+          this.fx.stars((a.x + b.x) / 2, this.groundY - 12 * s, 1);
+          this.fx.dust((a.x + b.x) / 2, this.groundY, 2);
+          if (Math.random() < 0.5) {
+            a.dir = a.dir === 1 ? -1 : 1;
+            b.dir = b.dir === 1 ? -1 : 1;
+          } else {
+            a.face(b.x);
+            b.face(a.x);
+          }
+        }
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Usapan dan lirikan
+
+  private updateCursorEffects(dt: number, now: number): void {
+    const s = this.pixelScale;
+    const cur = this.cursor;
+    const live = cur !== null;
+    let target: CatActor | null = null;
+    if (live && !this.press && !this.dragging) target = this.actorAt(cur!.x, cur!.y, false);
+    if (target && this.prevCursor && this.rubTarget === target) {
+      const d = Math.hypot(cur!.x - this.prevCursor.x, cur!.y - this.prevCursor.y) / s;
+      if (d > 0.3 && d < 60 && !target.airborne && target.mode !== "angry") {
+        target.rub += d;
+        target.lastRubAt = now;
+      }
+    }
+    this.rubTarget = target;
+
+    this.rubFxTimer -= dt;
+    const moved = performance.now() - this.cursorMovedAt < 2000;
+    for (const a of this.cats.values()) {
+      if (now - a.lastRubAt > 250) a.rub = Math.max(0, a.rub - 40 * dt);
+      const rubbing = now - a.lastRubAt < 250 && a.rub > 25;
+      if (rubbing && this.rubFxTimer <= 0) {
+        this.rubFxTimer = 0.5;
+        const head = a.headPos();
+        this.fx.hearts(head.x, head.y, 1);
+        this.actions.tip("rub", "Terus usap-usap... dia mulai suka!");
+      }
+      if (a.rub >= RUB_TO_PURR) {
+        a.rub = 0;
+        this.purr(a);
+      }
+      if (a.mode === "purr" && now - a.lastRubAt < 250) a.extendMode(1.5);
+
+      const head = a.headPos();
+      a.curious = live && !this.dragging && Math.hypot(cur!.x - head.x, cur!.y - head.y) < 30 * s;
+      if (live && moved && !this.dragging && Math.abs(cur!.x - a.x) < 160 * s && cur!.y > this.groundY - 120 * s) {
+        a.lookToward(cur!.x, now);
+      }
+    }
+    if (this.visitor && live && moved) this.visitor.lookToward(cur!.x, now);
+    this.prevCursor = cur ? { ...cur } : null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Label dan kursor
+
+  private updateHover(): void {
+    const s = this.pixelScale;
+    const label = this.hoverLabel;
+    const cur = this.cursor;
+    const canvas = this.app.canvas;
+    let text = "";
+    let lx = 0;
+    let ly = 0;
+    let cursorStyle = "";
+    let heartCountShown = -1;
+
+    if (this.dragging) {
+      cursorStyle = "grabbing";
+      if (this.dropTarget) {
+        const view = this.facilities.get(this.dropTarget)!;
+        const cat = this.game.cat(this.dragging.id);
+        const used = this.game.slotsUsed(this.dropTarget, this.dragging.id);
+        const slots = BALANCE.slotsPerFacility;
+        const full = used >= slots && cat?.facility !== this.dropTarget;
+        text = cat?.facility === this.dropTarget ? `Sudah di ${FACILITIES[this.dropTarget].name}` : full ? `${FACILITIES[this.dropTarget].name} penuh` : `Tugaskan ke ${FACILITIES[this.dropTarget].name} (${used}/${slots})`;
+        lx = view.x;
+        ly = this.groundY - view.sprite.height - 6 * s;
+      }
+    } else if (cur) {
+      const target = this.targetAt(cur.x, cur.y);
+      if (target?.kind === "actor") {
+        const a = target.actor;
+        cursorStyle = a.isVisitor || this.treatMode ? "pointer" : "grab";
+        if (a.isVisitor) {
+          const fed = this.game.state.visitor?.fed ?? 0;
+          text = fed >= 3 ? "Mau tinggal di sini!" : `Kucing liar · beri makan (${fed}/3)`;
+        } else {
+          const cat = this.game.cat(a.id);
+          if (cat) {
+            const h = heartCount(cat);
+            const mood =
+              a.mode === "sulk" || a.mode === "angry"
+                ? " · ngambek"
+                : a.mode === "purr"
+                  ? " · prrr..."
+                  : a.mode === "sleep"
+                    ? " · tidur"
+                    : isHungry(cat)
+                      ? " · lapar"
+                      : "";
+            text = `${cat.name}${mood}`;
+            heartCountShown = h;
+          }
+        }
+        const head = a.headPos();
+        lx = head.x;
+        ly = head.y - 4;
+      } else if (target?.kind === "gift") {
+        const giver = this.game.cat(target.view.gift.catId);
+        text = `Hadiah dari ${giver?.name ?? "kucingmu"}`;
+        lx = this.giftX(target.view);
+        ly = this.groundY - 12 * s;
+        cursorStyle = "pointer";
+      } else if (target?.kind === "facility") {
+        cursorStyle = "pointer";
+        if (this.hiddenIn(target.id)) {
+          text = "Ada yang bersembunyi...";
+          const view = this.facilities.get(target.id)!;
+          lx = view.x;
+          ly = this.groundY - view.sprite.height - 4;
+        }
+      } else if (target?.kind === "sparkle") {
+        cursorStyle = "pointer";
+      }
+    }
+    if (canvas.style.cursor !== cursorStyle) canvas.style.cursor = cursorStyle;
+    label.visible = text.length > 0;
+    const hearts = this.hoverHearts;
+    hearts.visible = label.visible && heartCountShown >= 0;
+    if (label.visible) {
+      if (label.text !== text) label.text = text;
+      const half = Math.max(label.width / 2, 20 * s) + 4;
+      const x = Math.round(clamp(lx, half, this.width - half));
+      let y = Math.round(Math.max(label.height + 2, ly));
+      if (hearts.visible) {
+        // Lima hati piksel di bawah nama: penuh = ikatan yang sudah terkumpul.
+        const hs = Math.max(2, Math.round(s * 0.6));
+        const step = 8 * hs;
+        hearts.children.forEach((child, i) => {
+          const sp = child as Sprite;
+          sp.texture = objectTexture(i < heartCountShown ? "heart" : "heartEmpty");
+          sp.scale.set(hs);
+          sp.position.set(x + (i - 2) * step, y);
+        });
+        y -= 6 * hs + 2;
+      }
+      label.position.set(x, y);
+    }
   }
 
   // -------------------------------------------------------------------------
 
-  private update(dt: number): void {
+  private updateFacilities(dt: number, now: number): void {
+    const s = this.pixelScale;
+    for (const view of this.facilities.values()) {
+      // Sorotan saat kucing diangkat di atasnya. Bentuknya digambar sekali; denyutnya lewat alpha.
+      const glowOn = this.dragging !== null && this.dropTarget === view.id;
+      const glowKey = glowOn ? `${view.x}:${this.groundY}:${s}` : "";
+      if (glowKey !== view.glowKey) {
+        view.glowKey = glowKey;
+        view.glow.clear();
+        if (glowOn) {
+          const w = view.sprite.texture.width * s;
+          const h = view.sprite.texture.height * s;
+          view.glow
+            .roundRect(view.x - w / 2 - 3 * s, this.groundY - h - 3 * s, w + 6 * s, h + 4 * s, 3 * s)
+            .fill({ color: 0xfff3b0, alpha: 0.25 })
+            .stroke({ color: 0xffe08a, width: s, alpha: 1 });
+        }
+      }
+      if (glowOn) view.glow.alpha = 0.65 + 0.35 * Math.sin(now / 120);
+
+      let offset = 0;
+      if (view.id === "benang") {
+        const playing = this.residents().some((a) => a.mode === "play" && Math.abs(a.x - view.x) < 30 * s);
+        view.wobble = playing ? view.wobble + dt : Math.max(0, view.wobble - dt);
+        if (view.wobble > 0) offset = Math.round(Math.sin(view.wobble * 6) * 2) * s;
+      }
+
+      if (view.id === "kardus") {
+        const hidden = this.hiddenIn("kardus");
+        let eyesKey = "";
+        let look = 0;
+        if (hidden) {
+          view.wobble += dt;
+          // Sesekali kardus bergoyang.
+          const phase = view.wobble % 4;
+          if (phase < 0.3) offset = Math.round(Math.sin(phase * 40)) * s;
+          // Sepasang mata mengintip dari celah kardus.
+          const blink = Math.floor(now / 150) % 23 === 0;
+          look = Math.round(Math.sin(now / 900) * 2);
+          if (!blink) eyesKey = `${look}:${s}`;
+        } else view.wobble = 0;
+        if (eyesKey !== view.eyesKey) {
+          view.eyesKey = eyesKey;
+          view.eyes.clear();
+          if (eyesKey) for (const ex of [7, 11]) view.eyes.rect((ex + look - 10) * s, 3 * s, s, s).fill(0xf7e26b);
+        }
+        view.eyes.position.set(view.x + offset, this.groundY - 12 * s);
+      }
+      view.sprite.position.set(view.x + offset, this.groundY);
+    }
+  }
+
+  private updateGifts(dt: number, now: number): void {
+    const s = this.pixelScale;
+    for (const view of this.gifts.values()) {
+      if (!view.revealed) {
+        if (!view.carrier || view.carrier.task !== "gift" || view.carrier.removed) this.revealGift(view, false);
+        continue;
+      }
+      view.t += dt;
+      const x = this.giftX(view);
+      const drop = view.t < 0.35 ? (1 - view.t / 0.35) * 8 * s : 0;
+      const wiggle = (now / 1000 + view.gift.x * 10) % 3 < 0.3 ? Math.round(Math.sin(now / 40)) * 0.5 * s : 0;
+      view.sprite.scale.set(s);
+      view.sprite.position.set(Math.round(x + wiggle), Math.round(this.groundY - drop));
+      if (Math.random() < dt * 0.6) this.fx.icon("star", x + rand(-5, 5) * s, this.groundY - rand(6, 12) * s, { vy: -6 * s, life: 0.7, scale: 0.3 });
+    }
+  }
+
+  private updateSparkle(dt: number): void {
     const state = this.game.state;
+    if (!this.sparkle || !state.sparkle) return;
+    const s = this.pixelScale;
+    const sp = state.sparkle;
+    const [minX, maxX] = this.walkRange();
+    const x = clamp(this.sparkleX, minX, maxX);
+    const t = performance.now() / 1000;
+    this.sparkle.position.set(Math.round(x), Math.round(this.groundY - 12 * s + Math.sin(t * 3) * 2 * s));
+    this.sparkle.scale.set(s);
+    const remaining = (sp.expiresAt - Date.now()) / 1000;
+    this.sparkle.alpha = remaining < 4 ? 0.4 + 0.6 * Math.abs(Math.sin(t * 6)) : 1;
+    this.sparkleTimer -= dt;
+    if (this.sparkleTimer <= 0) {
+      this.sparkleTimer = 0.5;
+      this.fx.stars(x, this.groundY - 12 * s, 1);
+    }
+  }
+
+  private update(dt: number): void {
+    const now = Date.now();
+    const state = this.game.state;
+    this.hourTimer -= dt;
+    if (this.hourTimer <= 0) {
+      this.hourTimer = 30;
+      this.hour = new Date().getHours();
+    }
+
+    this.updateCursorEffects(dt, now);
+    this.updateToy(dt);
+    this.updateTreat(performance.now());
+    this.updateDirector(dt);
+
+    const butterfly = this.ambient.butterfly;
     const byId = new Map(state.cats.map((c) => [c.id, c]));
-    for (const actor of this.cats.values()) actor.update(dt, byId.get(actor.id));
-    this.visitor?.update(dt, undefined);
+    for (const actor of this.cats.values()) {
+      if (actor.task === "butterfly" && actor.mode === "run" && butterfly) {
+        actor.retarget(butterfly.x - Math.sign(butterfly.x - actor.x) * 14 * this.pixelScale);
+      }
+      const cat = byId.get(actor.id);
+      if (cat) {
+        actor.accessory = cat.accessory;
+        actor.setNeed(isHungry(cat) && actor.mode !== "sleep" && actor.mode !== "eat" ? "fish" : null);
+      }
+      if (actor.needsDecision) this.decide(actor);
+      actor.update(dt, now);
+    }
+    this.updateSocials(dt);
+
+    const v = this.visitor;
+    if (v) {
+      const fed = state.visitor?.fed ?? 0;
+      v.setNeed(v.mode === "wait" && fed < 3 ? "fish" : null);
+      v.setDots(v.mode === "wait" || v.mode === "happy" ? fed : null);
+      if (v.needsDecision) this.decide(v);
+      v.update(dt, now);
+    }
     for (let i = this.leaving.length - 1; i >= 0; i--) {
       const actor = this.leaving[i];
-      actor.update(dt, undefined);
+      actor.update(dt, now);
       if (actor.removed) {
         actor.destroy();
         this.leaving.splice(i, 1);
       }
     }
 
-
-    if (this.sparkle && state.sparkle) {
-      const s = this.pixelScale;
-      const sp = state.sparkle;
-      const [minX, maxX] = this.walkRange();
-      const x = minX + sp.x * (maxX - minX);
-      const t = performance.now() / 1000;
-      this.sparkle.position.set(Math.round(x), Math.round(this.groundY - 12 * s + Math.sin(t * 3) * 2 * s));
-      this.sparkle.scale.set(s);
-      const remaining = (sp.expiresAt - Date.now()) / 1000;
-      this.sparkle.alpha = remaining < 4 ? 0.4 + 0.6 * Math.abs(Math.sin(t * 6)) : 1;
-      this.sparkleTimer -= dt;
-      if (this.sparkleTimer <= 0) {
-        this.sparkleTimer = 0.5;
-        this.emitStars(x, this.groundY - 12 * s, 1);
-      }
-    }
-
-    for (let i = this.particles.length - 1; i >= 0; i--) {
-      const p = this.particles[i];
-      p.life -= dt;
-      if (p.life <= 0) {
-        p.node.destroy();
-        this.particles.splice(i, 1);
-        continue;
-      }
-      p.vy += p.gravity * dt;
-      p.node.x += p.vx * dt;
-      p.node.y += p.vy * dt;
-      p.node.alpha = Math.min(1, (p.life / p.maxLife) * 2);
-    }
+    this.updateFacilities(dt, now);
+    this.updateGifts(dt, now);
+    this.updateSparkle(dt);
+    const [minX, maxX] = this.walkRange();
+    this.ambient.update(dt, {
+      scale: this.pixelScale,
+      groundY: this.groundY,
+      minX,
+      maxX,
+      width: this.width,
+      focus: this.focusMode,
+      hour: this.hour,
+    });
+    this.fx.update(dt);
+    this.updateHover();
   }
 }
-

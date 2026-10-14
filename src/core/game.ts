@@ -1,19 +1,34 @@
 // Game: memegang GameState, menjalankan simulasi, dan menyediakan aksi pemain.
 // Tidak tahu apa pun soal tampilan; UI mendengarkan event-nya.
 
-import { BALANCE, CAT_NAMES, COATS, COAT_BY_ID, FACILITIES, RARITY_WEIGHT, TRAIT_IDS, UPGRADES, UPGRADE_BY_ID } from "./data";
+import {
+  ACCESSORIES,
+  ACCESSORY_BY_ID,
+  BALANCE,
+  CAT_NAMES,
+  COATS,
+  COAT_BY_ID,
+  FACILITIES,
+  RARITY_WEIGHT,
+  TRAIT_IDS,
+  TRINKETS,
+  UPGRADES,
+  UPGRADE_BY_ID,
+} from "./data";
 import {
   baitCost,
   facilityCost,
   feedCost,
   hasTrait,
+  hearts,
+  treatCost,
   offlineGain,
   prestigeGain,
   productionPerSecond,
   unlockedRarities,
 } from "./economy";
 import { createInitialState } from "./state";
-import type { CatState, FacilityId, GameState, Rarity, UpgradeDef } from "./types";
+import type { CatState, FacilityId, GameState, GiftItem, GiftState, Rarity, UpgradeDef } from "./types";
 import { FACILITY_IDS } from "./types";
 
 export type GameEvent =
@@ -32,7 +47,14 @@ export type GameEvent =
   | { type: "offline"; fish: number; seconds: number }
   | { type: "prestiged"; gained: number }
   | { type: "catUpdated"; catId: string }
-  | { type: "settings" };
+  | { type: "settings" }
+  | { type: "bond"; catId: string; hearts: number; levelUp: boolean }
+  | { type: "purr"; catId: string }
+  | { type: "treatGiven"; catId: string }
+  | { type: "toyCatch"; catId: string; reward: number }
+  | { type: "inventory" }
+  | { type: "giftDropped"; gift: GiftState }
+  | { type: "giftCollected"; gift: GiftState; title: string; detail: string };
 
 type Listener = (e: GameEvent) => void;
 
@@ -99,6 +121,7 @@ export class Game {
     }
 
     this.drainHunger(dt);
+    if (dt <= OFFLINE_THRESHOLD_SECONDS && this.visible) this.maybeSpawnGifts(dt, now);
     this.updateVisitor(now);
     this.updateSparkle(now);
     s.lastTick = now;
@@ -237,13 +260,212 @@ export class Game {
   }
 
   petCat(catId: string, now: number): boolean {
-    const cat = this.state.cats.find((c) => c.id === catId);
+    const cat = this.cat(catId);
     if (!cat) return false;
     cat.lastPetAt = now;
     this.state.spiritUntil = now + BALANCE.spiritMinutes * MINUTE;
     this.state.stats.petted += 1;
     this.emit({ type: "petted", catId });
+    // Ikatan dari klik dibatasi jeda agar tidak bisa dipanen dengan klik beruntun.
+    const last = this.lastPetBond.get(catId) ?? 0;
+    if (now - last >= BALANCE.petBondCooldownMs) {
+      this.lastPetBond.set(catId, now);
+      this.addBond(cat, BALANCE.bondPerPet);
+    }
     return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Ikatan, dengkur, camilan, mainan (v2)
+
+  private lastPetBond = new Map<string, number>();
+  private lastToyCatch = new Map<string, number>();
+  private lastPurr = new Map<string, number>();
+
+  cat(catId: string): CatState | undefined {
+    return this.state.cats.find((c) => c.id === catId);
+  }
+
+  private addBond(cat: CatState, amount: number): void {
+    const before = hearts(cat);
+    cat.bond = Math.min(BALANCE.maxBond, Math.max(0, cat.bond + amount));
+    const after = hearts(cat);
+    this.emit({ type: "bond", catId: cat.id, hearts: after, levelUp: after > before });
+  }
+
+  /** Kucing mendengkur setelah diusap cukup lama. false bila masih dalam jeda. */
+  purr(catId: string, now: number): boolean {
+    const cat = this.cat(catId);
+    if (!cat) return false;
+    const last = this.lastPurr.get(catId);
+    if (last !== undefined && now - last < BALANCE.purrCooldownMs) return false;
+    this.lastPurr.set(catId, now);
+    cat.lastPetAt = now;
+    this.state.spiritUntil = now + BALANCE.spiritMinutes * MINUTE;
+    this.state.stats.purrs += 1;
+    this.emit({ type: "purr", catId });
+    this.addBond(cat, BALANCE.bondPerPurr);
+    return true;
+  }
+
+  treatPrice(now: number): number {
+    return treatCost(this.state, now);
+  }
+
+  buyTreats(amount: number, now: number): boolean {
+    if (amount < 1) return false;
+    const cost = this.treatPrice(now) * amount;
+    if (this.state.fish < cost) return false;
+    this.state.fish -= cost;
+    this.state.inventory.treats += amount;
+    this.emit({ type: "inventory" });
+    return true;
+  }
+
+  giveTreat(catId: string, _now: number): boolean {
+    const cat = this.cat(catId);
+    if (!cat || this.state.inventory.treats <= 0) return false;
+    this.state.inventory.treats -= 1;
+    cat.hunger = Math.min(1, cat.hunger + 0.35);
+    this.state.stats.treatsGiven += 1;
+    this.emit({ type: "treatGiven", catId });
+    this.emit({ type: "inventory" });
+    this.addBond(cat, BALANCE.bondPerTreat);
+    return true;
+  }
+
+  /** Kucing menangkap mainan bulu. Mengembalikan hadiah ikan (0 bila masih jeda). */
+  toyCatch(catId: string, now: number): number {
+    const cat = this.cat(catId);
+    if (!cat) return 0;
+    const last = this.lastToyCatch.get(catId) ?? 0;
+    if (now - last < BALANCE.toyCatchCooldownMs) return 0;
+    this.lastToyCatch.set(catId, now);
+    const reward = Math.max(1, this.rate(now) * BALANCE.toyRewardSeconds);
+    this.addFish(reward);
+    this.state.stats.toyCatches += 1;
+    this.emit({ type: "toyCatch", catId, reward });
+    this.addBond(cat, BALANCE.bondPerToyCatch);
+    return reward;
+  }
+
+  // -------------------------------------------------------------------------
+  // Aksesori (v2)
+
+  buyAccessory(id: string): boolean {
+    const acc = ACCESSORY_BY_ID[id];
+    if (!acc || acc.price === null || this.state.inventory.accessories.includes(id)) return false;
+    if (this.state.fish < acc.price) return false;
+    this.state.fish -= acc.price;
+    this.state.inventory.accessories.push(id);
+    this.emit({ type: "inventory" });
+    return true;
+  }
+
+  /** Pakaikan aksesori; bila sedang dipakai kucing lain, dipindahkan. */
+  equipAccessory(catId: string, id: string | null): boolean {
+    const cat = this.cat(catId);
+    if (!cat) return false;
+    if (id !== null && !this.state.inventory.accessories.includes(id)) return false;
+    if (id !== null) {
+      for (const other of this.state.cats) {
+        if (other.id !== catId && other.accessory === id) {
+          other.accessory = null;
+          this.emit({ type: "catUpdated", catId: other.id });
+        }
+      }
+    }
+    cat.accessory = id;
+    this.emit({ type: "catUpdated", catId });
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Hadiah dari kucing (v2)
+
+  private maybeSpawnGifts(dt: number, now: number): void {
+    const s = this.state;
+    if (s.gifts.length >= BALANCE.maxGiftsOnStrip) return;
+    const chance = BALANCE.giftChancePerMinute * (dt / 60);
+    for (const cat of s.cats) {
+      if (hearts(cat) < BALANCE.giftMinHearts) continue;
+      if (s.gifts.some((g) => g.catId === cat.id)) continue;
+      if (this.rand() < chance) {
+        this.dropGift(cat, now);
+        if (s.gifts.length >= BALANCE.maxGiftsOnStrip) return;
+      }
+    }
+  }
+
+  private rollGiftItem(): GiftItem {
+    const r = this.rand();
+    if (r < 0.55) return { kind: "fish", seconds: BALANCE.giftFishSeconds };
+    if (r < 0.8) return { kind: "treats", amount: 2 };
+    if (r < 0.92) return { kind: "trinket", name: TRINKETS[Math.floor(this.rand() * TRINKETS.length)] };
+    const owned = new Set(this.state.inventory.accessories);
+    const pending = new Set(
+      this.state.gifts.flatMap((g) => (g.item.kind === "accessory" ? [g.item.id] : [])),
+    );
+    const giftOnly = ACCESSORIES.filter((a) => a.price === null && !owned.has(a.id) && !pending.has(a.id));
+    if (giftOnly.length === 0) return { kind: "fish", seconds: BALANCE.giftFishSeconds };
+    return { kind: "accessory", id: giftOnly[Math.floor(this.rand() * giftOnly.length)].id };
+  }
+
+  /** Dipakai juga oleh tes dan mode pengembangan. */
+  dropGift(cat: CatState, now: number, item: GiftItem = this.rollGiftItem()): GiftState {
+    this.state.giftCounter += 1;
+    const gift: GiftState = {
+      id: `gift-${this.state.giftCounter}`,
+      catId: cat.id,
+      item,
+      x: 0.1 + this.rand() * 0.7,
+      createdAt: now,
+    };
+    this.state.gifts.push(gift);
+    this.emit({ type: "giftDropped", gift });
+    return gift;
+  }
+
+  collectGift(giftId: string, now: number): { title: string; detail: string } | null {
+    const s = this.state;
+    const index = s.gifts.findIndex((g) => g.id === giftId);
+    if (index < 0) return null;
+    const [gift] = s.gifts.splice(index, 1);
+    const giver = this.cat(gift.catId)?.name ?? "Kucingmu";
+    let title: string;
+    let detail: string;
+    switch (gift.item.kind) {
+      case "fish": {
+        const fish = Math.max(25, this.rate(now) * gift.item.seconds);
+        this.addFish(fish);
+        title = `${giver} membawakan ikan segar!`;
+        detail = `+${Math.round(fish).toLocaleString("id-ID")} ikan`;
+        break;
+      }
+      case "treats":
+        s.inventory.treats += gift.item.amount;
+        title = `${giver} menemukan camilan!`;
+        detail = `+${gift.item.amount} camilan`;
+        break;
+      case "accessory": {
+        const acc = ACCESSORY_BY_ID[gift.item.id];
+        if (!s.inventory.accessories.includes(acc.id)) s.inventory.accessories.push(acc.id);
+        title = `${giver} memberimu ${acc.name}!`;
+        detail = "Aksesori baru. Pakaikan lewat panel Kucing.";
+        break;
+      }
+      case "trinket": {
+        const fish = Math.max(10, this.rate(now) * 30);
+        this.addFish(fish);
+        title = `${giver} membawa ${gift.item.name.toLowerCase()}.`;
+        detail = `Tidak berguna, tapi manis. +${Math.round(fish).toLocaleString("id-ID")} ikan`;
+        break;
+      }
+    }
+    s.stats.giftsReceived += 1;
+    this.emit({ type: "giftCollected", gift, title, detail });
+    this.emit({ type: "inventory" });
+    return { title, detail };
   }
 
   slotsUsed(id: FacilityId, exceptCatId?: string): number {
@@ -368,6 +590,8 @@ export class Game {
       hunger: 1,
       lastPetAt: 0,
       adoptedAt: now,
+      bond: 10,
+      accessory: null,
     };
     this.state.cats.push(cat);
     this.state.visitor = null;

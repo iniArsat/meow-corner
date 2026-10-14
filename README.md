@@ -1,12 +1,34 @@
 # Meow Corner
 
-Game idle kucing yang tinggal di strip bawah layar desktop. Kucing-kucing berjalan, tidur, makan, dan mengumpulkan ikan selagi Anda bekerja. Dibuat dengan **Tauri 2 + TypeScript + PixiJS**, tanpa game engine.
+Game idle kucing yang tinggal di strip bawah layar desktop. Kucing-kucing berjalan, tidur, makan, bermain, dan mengumpulkan ikan selagi Anda bekerja, dan Anda bisa mengelus, mengusap, mengangkat, dan bermain dengan mereka langsung dari kursor. Dibuat dengan **Tauri 2 + TypeScript + PixiJS**, tanpa game engine.
 
 ![Tampilan strip](docs/screenshot.png)
 
 ## Unduh dan main
 
 Buka halaman **[Releases](https://github.com/iniArsat/meow-corner/releases/latest)**, unduh file yang berakhiran `-setup.exe`, lalu klik dua kali untuk memasang. Installer dibuat otomatis oleh GitHub Actions setiap ada perubahan di branch `main`.
+
+## Baru di versi 0.2: kucing yang bisa diajak berinteraksi
+
+**Interaksi langsung dengan kursor**
+- **Usap**: gerakkan kursor bolak-balik di atas kucing (tanpa klik) sampai ia mendengkur. Muncul not musik dan hati.
+- **Angkat dan lempar**: seret kucing dengan mouse; ia menggantung dan berayun. Jatuhkan di atas fasilitas untuk menugaskannya, atau ke dalam kardus untuk bersembunyi. Dilempar terlalu keras dua kali? Dia kesal.
+- **Mainan bulu**: tombol bulu di HUD memasang bulu di ujung tali pada kursor. Kucing mengejar, merunduk sambil menggoyang pantat, lalu menerkam. Tangkapan memberi ikan.
+- **Camilan**: tombol camilan, lalu klik kucing. Kucing di dekat kursor datang dan mengemis.
+- **Jangan diklik terus-terusan**: kucing mendesis, kabur, lalu ngambek membelakangi Anda. Usap pelan atau beri camilan untuk berbaikan.
+- Kucing menoleh ke arah kursor, tampak penasaran saat kursor mendekat, dan bisa **dipanggil** dari panel Kucing.
+
+**Ikatan, aksesori, hadiah**
+- Setiap kucing punya **ikatan** 0–5 hati. Setiap hati menambah produksi 2%.
+- **14 aksesori**: pita, topi pesta, peci, blangkon, topi penyihir, kacamata, dan lain-lain. 10 dijual di Toko, 4 hanya bisa didapat sebagai hadiah.
+- Kucing dengan 3 hati ke atas kadang **membawakan hadiah**: kado yang dibawa di mulut lalu diletakkan di lantai. Klik kadonya.
+
+**Kehidupan di strip**
+- Kucing memakai fasilitasnya: makan di mangkuk, bermain benang, bersembunyi di kardus (matanya mengintip), bertengger di tiang garuk, duduk di atas akuarium, dan berjemur di rak jendela.
+- **Antar-kucing**: saling sundul hidung, saling menjilati, bergulat main-main, dan tidur berpelukan.
+- **Zoomies** (lari kencang tiba-tiba), gelembung pikiran, kupu-kupu di siang hari yang dikejar kucing, dan kunang-kunang di malam hari.
+- Saat tombol **Beri makan** ditekan, semua kucing berlari ke mangkuk.
+- Simpanan v0.1 otomatis dipindahkan ke format baru; progres tidak hilang.
 
 ## Isi versi 0.1 (MVP)
 
@@ -78,13 +100,14 @@ Lalu buka <http://localhost:1420>. Klik tembus dan tray tidak aktif di mode ini,
 ```js
 meow.game.state.fish = 1e6;          // banyak ikan untuk mencoba toko
 meow.game.callVisitor(Date.now());   // panggil kucing liar
+meow.game.dropGift(meow.game.state.cats[0], Date.now()); // hadiah dari kucing
 ```
 
 ## Perintah lain
 
 | Perintah | Fungsi |
 | --- | --- |
-| `npm test` | Menjalankan 35 tes unit (ekonomi, alur game, simpanan, sprite) |
+| `npm test` | Menjalankan tes unit (ekonomi, alur game, simpanan, ikatan/hadiah, sprite) |
 | `npm run typecheck` | Pemeriksaan tipe TypeScript |
 | `npm run build` | Build frontend ke `dist/` |
 
@@ -99,8 +122,11 @@ src/
     state.ts     State awal dan migrasi simpanan
     save.ts      Simpan/muat dengan cadangan
   render/      Tampilan PixiJS
-    pixelart.ts  Generator pixel art (pose kucing, pola bulu, fasilitas)
-    stage.ts     Strip, perilaku kucing, tamu, efek partikel
+    pixelart.ts  Generator pixel art (pose kucing, pola bulu, aksesori, fasilitas)
+    catActor.ts  Satu kucing: animasi, gerak, lompat, jatuh, diangkat, emosi
+    stage.ts     Strip, input mouse, keputusan kucing, mainan, camilan, hadiah, sosial
+    effects.ts   Partikel (hati, bintang, not musik, debu, remah)
+    ambient.ts   Kupu-kupu dan kunang-kunang
   ui/          HUD, panel, dialog (HTML + CSS)
   platform/    Jembatan ke Tauri dan klik tembus
 src-tauri/

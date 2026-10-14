@@ -52,8 +52,19 @@ export function catContribution(cat: CatState, ctx: ProductionContext): number {
     case "penjelajah":
       break;
   }
+  bonus += hearts(cat) * BALANCE.heartBonus;
   bonus = Math.max(0, bonus);
   return isHungry(cat) ? bonus * 0.5 : bonus;
+}
+
+/** Jumlah hati ikatan, 0..5. */
+export function hearts(cat: Pick<CatState, "bond">): number {
+  return Math.floor(Math.min(BALANCE.maxBond, Math.max(0, cat.bond)) / BALANCE.bondPerHeart);
+}
+
+export function treatCost(state: GameState, now: number): number {
+  const rate = productionPerSecond(state, { online: true, now });
+  return Math.max(BALANCE.treatMinCost, Math.ceil(rate * BALANCE.treatCostSeconds));
 }
 
 /** Kucing yang sah bekerja di fasilitas (dibatasi jumlah slot, urut waktu adopsi). */

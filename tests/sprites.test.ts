@@ -2,7 +2,8 @@ import { deflateSync } from "node:zlib";
 import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { COATS } from "../src/core/data";
-import { CAT_H, CAT_POSE_NAMES, CAT_W, OBJECTS, renderCat, renderObject, type ObjectId, type PixelImage } from "../src/render/pixelart";
+import { ACCESSORIES } from "../src/core/data";
+import { ACCESSORY_ART, CAT_POSE_NAMES, OBJECTS, poseSize, renderCat, renderObject, type ObjectId, type PixelImage } from "../src/render/pixelart";
 
 function hasMagenta(img: PixelImage): boolean {
   for (let i = 0; i < img.data.length; i += 4) {
@@ -16,10 +17,17 @@ describe("sprite", () => {
     for (const coat of COATS) {
       for (const pose of CAT_POSE_NAMES) {
         const img = renderCat(pose, coat);
-        expect(img.w).toBe(CAT_W);
-        expect(img.h).toBe(CAT_H);
+        expect(img.w).toBe(poseSize(pose).w);
+        expect(img.h).toBe(poseSize(pose).h);
         expect(hasMagenta(img)).toBe(false);
       }
+    }
+  });
+
+  it("setiap aksesori punya gambar dan ter-render di semua pose", () => {
+    for (const acc of ACCESSORIES) {
+      expect(ACCESSORY_ART[acc.id], acc.id).toBeDefined();
+      for (const pose of CAT_POSE_NAMES) expect(hasMagenta(renderCat(pose, COATS[0], acc.id)), acc.id).toBe(false);
     }
   });
 
@@ -103,6 +111,8 @@ if (previewDir) {
     writeFileSync(`${previewDir}/coats.png`, png(sheet(coats, 6, 6)));
     const sits = COATS.map((c) => renderCat("sit", c));
     writeFileSync(`${previewDir}/coats-sit.png`, png(sheet(sits, 6, 6)));
+    const accs = ACCESSORIES.map((a, i) => renderCat(i % 2 ? "sit" : "stand", COATS[i % COATS.length], a.id));
+    writeFileSync(`${previewDir}/accessories.png`, png(sheet(accs, 7, 6)));
     const objects = (Object.keys(OBJECTS) as ObjectId[]).map((id) => renderObject(id));
     writeFileSync(`${previewDir}/objects.png`, png(sheet(objects, 6, 6)));
     // Sprite tunggal tanpa latar, dipakai sebagai bahan ikon aplikasi.

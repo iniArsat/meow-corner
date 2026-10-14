@@ -4,7 +4,6 @@ import "./ui/style.css";
 import { Game } from "./core/game";
 import { AutoSaver, loadState } from "./core/save";
 import { createInitialState } from "./core/state";
-import { formatFish } from "./core/format";
 import { ClickThroughController, htmlHitTest } from "./platform/clickThrough";
 import {
   createSaveBackend,
@@ -31,39 +30,38 @@ async function main(): Promise<void> {
 
   let ui: Ui;
   const stage = await Stage.create(document.getElementById("stage")!, game, {
-    onCatClick(catId) {
-      const now = Date.now();
-      if (!game.petCat(catId, now)) return;
-      stage.petCat(catId);
+    pet(catId) {
+      if (!game.petCat(catId, Date.now())) return;
       sound("pet");
       ui.tip("pet", "Elusan memberi bonus semangat +10% selama 10 menit.");
     },
-    onVisitorClick() {
+    purr: (catId) => game.purr(catId, Date.now()),
+    treat: (catId) => game.giveTreat(catId, Date.now()),
+    toyCatch: (catId) => game.toyCatch(catId, Date.now()),
+    assign: (catId, facility) => game.assignCat(catId, facility),
+    feedVisitor() {
       const fed = game.feedVisitor(Date.now());
-      const pos = stage.catPosition("visitor");
-      if (pos) {
-        stage.emitHearts(pos.x, pos.y, 2);
-        stage.floatText(pos.x, pos.y - 8, `${Math.min(fed, 3)}/3`, 0xffc2cf);
-      }
       sound("feed");
       if (fed >= 3) ui.showAdoptDialog();
+      return fed;
     },
-    onSparkleClick() {
-      const pos = stage.sparklePosition();
-      const reward = game.catchSparkle(Date.now());
-      if (reward > 0 && pos) {
-        stage.emitStars(pos.x, pos.y, 8);
-        stage.floatText(pos.x, pos.y - 10, `+${formatFish(reward)} ikan`);
-        sound("coin");
-      }
-    },
-    onFacilityClick(id) {
-      ui.openPanel("toko", id);
-    },
+    catchSparkle: () => game.catchSparkle(Date.now()),
+    collectGift: (giftId) => game.collectGift(giftId, Date.now()),
+    openFacility: (id) => ui.openPanel("toko", id),
+    sound,
+    tip: (key, text) => ui.tip(key, text),
+    modesChanged: () => ui.refreshModes(),
   });
 
   ui = new Ui(document.getElementById("ui")!, game, {
     sound,
+    interactions: {
+      toyMode: () => stage.toyMode,
+      setToyMode: (on) => stage.setToyMode(on),
+      treatMode: () => stage.treatMode,
+      setTreatMode: (on) => stage.setTreatMode(on),
+      callCat: (catId) => stage.callCat(catId),
+    },
     saveNow: () => saver.saveNow(),
     hide: () => hideWindow(),
     quit: async () => {
@@ -84,6 +82,7 @@ async function main(): Promise<void> {
       stage.setPixelScale(game.state.settings.scale);
       stage.setFocusMode(game.state.settings.focusMode);
     } else stage.sync();
+    stage.onGameEvent(e);
     ui.onGameEvent(e);
   });
 
@@ -105,16 +104,29 @@ async function main(): Promise<void> {
   if (fresh) {
     window.setTimeout(() => ui.toast("Halo! Ini Oyen. Buka Toko dan beli Mangkuk makan pertamamu.", 8000), 800);
   }
+  // Perkenalan interaksi v2, hanya untuk yang belum pernah mencobanya.
+  const stats = game.state.stats;
+  window.setTimeout(() => {
+    if (stats.purrs === 0) ui.tip("intro-rub", "Coba usap-usap kucing: gerakkan kursor bolak-balik di atasnya tanpa klik sampai ia mendengkur.", 9000);
+  }, fresh ? 25_000 : 6_000);
+  window.setTimeout(() => {
+    if (stats.toyCatches === 0) ui.tip("intro-toy", "Tekan tombol bulu di panel bawah, lalu goyangkan kursor di dekat lantai. Kucing akan mengejarnya!", 9000);
+  }, fresh ? 70_000 : 40_000);
+  window.setTimeout(() => {
+    ui.tip("intro-drag", "Kucing bisa diangkat: seret dengan mouse, lalu jatuhkan di atas fasilitas untuk menugaskannya.", 9000);
+  }, fresh ? 120_000 : 90_000);
 
   const clickThrough = new ClickThroughController(
     (x, y) => htmlHitTest(x, y) || stage.hitTest(x, y),
     (x, y) => stage.setHover(x, y),
+    () => stage.isCapturing(),
   );
   clickThrough.start();
 
   await onVisibilityChanged((visible) => {
     game.visible = visible;
     if (visible) clickThrough.reset();
+    else stage.cancelPress();
     stage.setPaused(!visible);
     if (!visible) void saver.saveNow();
   });

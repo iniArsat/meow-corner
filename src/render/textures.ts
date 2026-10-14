@@ -2,7 +2,15 @@
 
 import { Texture } from "pixi.js";
 import { COAT_BY_ID } from "../core/data";
-import { renderCat, renderObject, renderSilhouette, type CatPose, type ObjectId, type PixelImage } from "./pixelart";
+import {
+  ACCESSORY_ART,
+  renderCat,
+  renderObject,
+  renderSilhouette,
+  type CatPose,
+  type ObjectId,
+  type PixelImage,
+} from "./pixelart";
 
 function toCanvas(img: PixelImage, scale = 1): HTMLCanvasElement {
   const base = document.createElement("canvas");
@@ -33,12 +41,35 @@ function cachedTexture(key: string, make: () => PixelImage): Texture {
   return tex;
 }
 
-export function catTexture(coatId: string, pose: CatPose): Texture {
-  return cachedTexture(`cat:${coatId}:${pose}`, () => renderCat(pose, COAT_BY_ID[coatId]));
+export function catTexture(coatId: string, pose: CatPose, accessory: string | null = null): Texture {
+  const acc = accessory && ACCESSORY_ART[accessory] ? accessory : null;
+  return cachedTexture(`cat:${coatId}:${pose}:${acc ?? ""}`, () => renderCat(pose, COAT_BY_ID[coatId], acc));
 }
 
 export function objectTexture(id: ObjectId): Texture {
   return cachedTexture(`obj:${id}`, () => renderObject(id));
+}
+
+/** Bentuk sederhana bersama (bayangan, kepulan debu, piksel) agar tidak menggambar Graphics tiap frame. */
+const SHAPES = {
+  shadow: [".XXXXXXXXXXXXXX.", "XXXXXXXXXXXXXXXX", "XXXXXXXXXXXXXXXX", ".XXXXXXXXXXXXXX."],
+  puff: [".XX.", "XXXX", "XXXX", ".XX."],
+  pixel: ["X"],
+} as const;
+
+export type ShapeId = keyof typeof SHAPES;
+
+export function shapeTexture(id: ShapeId): Texture {
+  return cachedTexture(`shape:${id}`, () => {
+    const grid = SHAPES[id];
+    const w = grid[0].length;
+    const h = grid.length;
+    const data = new Uint8ClampedArray(w * h * 4);
+    grid.forEach((row, y) => {
+      for (let x = 0; x < w; x++) if (row[x] === "X") data.set([255, 255, 255, 255], (y * w + x) * 4);
+    });
+    return { w, h, data };
+  });
 }
 
 function cachedUrl(key: string, make: () => PixelImage, scale: number): string {
@@ -51,8 +82,9 @@ function cachedUrl(key: string, make: () => PixelImage, scale: number): string {
   return url;
 }
 
-export function catImageUrl(coatId: string, pose: CatPose = "sit", scale = 3): string {
-  return cachedUrl(`cat:${coatId}:${pose}`, () => renderCat(pose, COAT_BY_ID[coatId]), scale);
+export function catImageUrl(coatId: string, pose: CatPose = "sit", scale = 3, accessory: string | null = null): string {
+  const acc = accessory && ACCESSORY_ART[accessory] ? accessory : null;
+  return cachedUrl(`cat:${coatId}:${pose}:${acc ?? ""}`, () => renderCat(pose, COAT_BY_ID[coatId], acc), scale);
 }
 
 export function silhouetteUrl(scale = 3): string {

@@ -21,6 +21,8 @@ export class ClickThroughController {
   constructor(
     private hitTest: HitTest,
     private onHover: HoverHandler,
+    /** true selama tombol mouse ditekan di jendela (misalnya menyeret kucing). */
+    private isCapturing: () => boolean = () => false,
   ) {}
 
   start(): void {
@@ -51,7 +53,8 @@ export class ClickThroughController {
     try {
       const cursor = await cursorInWindow();
       if (!cursor) return;
-      const interactive = cursor.inside && this.hitTest(cursor.x, cursor.y);
+      // Selama menyeret, jendela tetap menangkap mouse walau kursor keluar dari strip.
+      const interactive = this.isCapturing() || (cursor.inside && this.hitTest(cursor.x, cursor.y));
       this.onHover(cursor.inside ? cursor.x : null, cursor.inside ? cursor.y : null);
       const now = Date.now();
       if (interactive === this.ignoring || now - this.lastSent > REASSERT_MS) {

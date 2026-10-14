@@ -1,11 +1,12 @@
 // Antarmuka HTML di atas kanvas: HUD, panel bertab, dialog adopsi, dan notifikasi.
 
-import { BALANCE, COATS, COAT_BY_ID, FACILITIES, RARITY_LABEL, TRAITS } from "../core/data";
+import { ACCESSORIES, ACCESSORY_BY_ID, BALANCE, COATS, COAT_BY_ID, FACILITIES, RARITY_LABEL, TRAITS } from "../core/data";
 import {
   catContribution,
   catsAt,
   facilityRate,
   fishToNextStar,
+  hearts,
   isHungry,
   offlineCapHours,
   spiritActive,
@@ -28,6 +29,8 @@ const SHORT_NAME: Record<FacilityId, string> = {
   rak: "Rak jendela",
 };
 
+const TIPS_KEY = "meow-corner.tips";
+
 export type TabId = "toko" | "kucing" | "koleksi" | "rumah" | "atur";
 
 const TABS: { id: TabId; label: string }[] = [
@@ -38,8 +41,18 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "atur", label: "Atur" },
 ];
 
+/** Mode interaksi strip yang dikendalikan dari HUD. */
+export interface Interactions {
+  toyMode(): boolean;
+  setToyMode(on: boolean): void;
+  treatMode(): boolean;
+  setTreatMode(on: boolean): void;
+  callCat(catId: string): void;
+}
+
 export interface UiDeps {
   sound(id: SoundId): void;
+  interactions: Interactions;
   /** true bila berhasil tersimpan. */
   saveNow(): Promise<boolean>;
   hide(): Promise<void>;
@@ -54,6 +67,9 @@ export class Ui {
   private rateEl: HTMLElement;
   private feedBtn: HTMLButtonElement;
   private shopBtn: HTMLButtonElement;
+  private toyBtn: HTMLButtonElement;
+  private treatBtn: HTMLButtonElement;
+  private treatCount: HTMLElement;
   private panel: HTMLElement | null = null;
   private panelBody: HTMLElement | null = null;
   private tab: TabId = "toko";
@@ -75,6 +91,18 @@ export class Ui {
     this.rateEl = h("span", { class: "hud-rate" }, "0/dtk");
     this.feedBtn = h("button", { class: "btn btn-feed", onclick: () => this.feedAll() }, "Beri makan");
     this.shopBtn = h("button", { class: "btn", onclick: () => this.togglePanel("toko") }, "Toko");
+    this.toyBtn = h(
+      "button",
+      { class: "btn btn-icon btn-mode", title: "Mainan bulu: kucing mengejar kursormu", onclick: () => this.toggleToy() },
+      h("img", { class: "px", src: objectImageUrl("feather", 2), alt: "Mainan" }),
+    );
+    this.treatCount = h("span", { class: "mode-count" }, "0");
+    this.treatBtn = h(
+      "button",
+      { class: "btn btn-icon btn-mode", title: "Camilan: klik kucing untuk memberinya", onclick: () => this.toggleTreat() },
+      h("img", { class: "px", src: objectImageUrl("treat", 2), alt: "Camilan" }),
+      this.treatCount,
+    );
     this.hud = h(
       "div",
       { class: "card hud", "data-hit": true },
@@ -85,6 +113,8 @@ export class Ui {
         h("div", { class: "hud-numbers" }, this.fishEl, this.rateEl),
       ),
       this.feedBtn,
+      this.toyBtn,
+      this.treatBtn,
       this.shopBtn,
       h("button", { class: "btn", onclick: () => this.togglePanel("kucing") }, "Kucing"),
       h("button", { class: "btn btn-icon", title: "Menu lain", onclick: () => this.togglePanel("koleksi") }, "⋯"),
@@ -96,12 +126,17 @@ export class Ui {
       if (e.key === "Escape") {
         if (this.dialog) this.closeDialog();
         else this.closePanel();
+        this.refreshModes();
       }
     });
     window.addEventListener("pointerdown", () => (this.pointerHeld = true), true);
     for (const type of ["pointerup", "pointercancel", "blur"]) {
       window.addEventListener(type, () => (this.pointerHeld = false), true);
     }
+    // pointerup yang terjadi di luar jendela tidak pernah sampai; pulihkan dari gerakan berikutnya.
+    window.addEventListener("pointermove", (e) => {
+      if (e.buttons === 0) this.pointerHeld = false;
+    }, true);
     window.setInterval(() => this.refreshPanelIfIdle(), 1000);
   }
 
@@ -129,6 +164,36 @@ export class Ui {
       this.feedBtn.disabled = s.fish < cost;
     }
     this.shopBtn.classList.toggle("has-dot", this.anythingAffordable());
+    this.refreshModes();
+  }
+
+  /** Perbarui tombol mainan/camilan di HUD. */
+  refreshModes(): void {
+    const it = this.deps.interactions;
+    this.toyBtn.classList.toggle("active", it.toyMode());
+    this.treatBtn.classList.toggle("active", it.treatMode());
+    this.treatCount.textContent = String(this.game.state.inventory.treats);
+  }
+
+  private toggleToy(): void {
+    const it = this.deps.interactions;
+    it.setToyMode(!it.toyMode());
+    this.deps.sound(it.toyMode() ? "chirp" : "pop");
+    this.refreshModes();
+  }
+
+  private toggleTreat(): void {
+    const it = this.deps.interactions;
+    if (!it.treatMode() && this.game.state.inventory.treats <= 0) {
+      this.deps.sound("denied");
+      this.toast("Camilan habis. Beli lagi di Toko.");
+      this.openPanel("toko");
+      this.panel?.querySelector("[data-section=camilan]")?.scrollIntoView({ block: "start" });
+      return;
+    }
+    it.setTreatMode(!it.treatMode());
+    this.deps.sound("pop");
+    this.refreshModes();
   }
 
   private anythingAffordable(): boolean {
@@ -210,6 +275,27 @@ export class Ui {
         break;
       case "prestiged":
         this.toast(`Pindah rumah berhasil! +${e.gained} Bintang.`, 6000);
+        break;
+      case "bond":
+        if (e.levelUp) {
+          const cat = this.game.cat(e.catId);
+          if (cat) {
+            this.deps.sound("levelup");
+            const extra =
+              e.hearts === BALANCE.giftMinHearts
+                ? " Sekarang dia kadang membawakanmu hadiah!"
+                : e.hearts === 5
+                  ? " Ikatan maksimal!"
+                  : "";
+            this.toast(`${cat.name} makin sayang padamu ${"♥".repeat(e.hearts)} (+${Math.round(e.hearts * BALANCE.heartBonus * 100)}% produksi).${extra}`, 6000);
+          }
+        }
+        break;
+      case "giftCollected":
+        this.toast(`${e.title} ${e.detail}`, 6000);
+        break;
+      case "inventory":
+        this.refreshModes();
         break;
       default:
         break;
@@ -342,6 +428,8 @@ export class Ui {
       }
     }
 
+    this.renderGoodies(body, now);
+
     body.append(h("h3", null, "Kucing liar"));
     const bait = g.baitPrice();
     body.append(
@@ -373,6 +461,87 @@ export class Ui {
         ),
       ),
     );
+  }
+
+  private renderGoodies(body: HTMLElement, now: number): void {
+    const g = this.game;
+    const s = g.state;
+    const price = g.treatPrice(now);
+    body.append(
+      h("h3", { "data-section": "camilan" }, "Camilan"),
+      h(
+        "div",
+        { class: "row" },
+        h("img", { class: "px thumb", src: objectImageUrl("treat", 3), alt: "" }),
+        h(
+          "div",
+          { class: "info" },
+          h("div", { class: "name" }, "Camilan ikan", h("span", { class: "owned" }, ` · punya ${s.inventory.treats}`)),
+          h("div", { class: "desc" }, `Tekan tombol camilan di bawah, lalu klik kucing. +${BALANCE.bondPerTreat} ikatan dan bikin kenyang.`),
+        ),
+        h(
+          "div",
+          { class: "buy" },
+          h(
+            "button",
+            { class: "btn btn-buy", disabled: s.fish < price, onclick: () => this.buyTreats(1) },
+            h("span", null, "Beli"),
+            h("small", null, formatFish(price)),
+          ),
+          h(
+            "button",
+            { class: "btn btn-buy small", disabled: s.fish < price * 5, onclick: () => this.buyTreats(5) },
+            h("span", null, "×5"),
+            h("small", null, formatFish(price * 5)),
+          ),
+        ),
+      ),
+    );
+
+    body.append(h("h3", null, "Aksesori"));
+    const ownedCount = s.inventory.accessories.length;
+    if (ownedCount > 0) body.append(h("p", { class: "desc" }, `Kamu punya ${ownedCount} aksesori. Pakaikan lewat tab Kucing.`));
+    const model = [...s.cats].sort((a, b) => a.adoptedAt - b.adoptedAt)[0];
+    // Tampilkan beberapa yang termurah dulu agar daftar tidak terlalu panjang.
+    const forSale = ACCESSORIES.filter((a) => a.price !== null && !s.inventory.accessories.includes(a.id)).slice(0, 4);
+    for (const acc of forSale) {
+      const cost = acc.price!;
+      body.append(
+        h(
+          "div",
+          { class: "row" },
+          h("img", { class: "px thumb cat-thumb", src: catImageUrl(model?.coat ?? "oyen", "sit", 2, acc.id), alt: "" }),
+          h("div", { class: "info" }, h("div", { class: "name" }, acc.name), h("div", { class: "desc" }, acc.description)),
+          h(
+            "div",
+            { class: "buy" },
+            h(
+              "button",
+              { class: "btn btn-buy", disabled: s.fish < cost, onclick: () => this.buyAccessory(acc.id) },
+              h("span", null, "Beli"),
+              h("small", null, formatFish(cost)),
+            ),
+          ),
+        ),
+      );
+    }
+    if (forSale.length === 0) {
+      body.append(h("p", { class: "desc" }, "Semua aksesori toko sudah kamu miliki. Aksesori langka hanya datang sebagai hadiah dari kucing."));
+    }
+  }
+
+  private buyTreats(amount: number): void {
+    if (this.game.buyTreats(amount, Date.now())) {
+      this.deps.sound("buy");
+      this.refreshModes();
+    } else this.deps.sound("denied");
+  }
+
+  private buyAccessory(id: string): void {
+    if (this.game.buyAccessory(id)) {
+      this.deps.sound("buy");
+      this.toast(`${ACCESSORY_BY_ID[id].name} dibeli! Pakaikan ke kucing lewat tab Kucing.`);
+    } else this.deps.sound("denied");
   }
 
   private buy(id: FacilityId, amount: number): void {
@@ -435,16 +604,25 @@ export class Ui {
       const trait = TRAITS[cat.trait];
       const working = cat.facility !== null && s.facilities[cat.facility] > 0 && catsAt(s, cat.facility).includes(cat);
       const contribution = working ? formatPercent(catContribution(cat, ctx)) : "bersantai";
+      const hs = hearts(cat);
+      const toNext = hs >= 5 ? "maksimal" : `${Math.floor(cat.bond - hs * BALANCE.bondPerHeart)}/${BALANCE.bondPerHeart} ke hati berikutnya`;
       body.append(
         h(
           "div",
           { class: "cat-card" },
-          h("img", { class: "px avatar", src: catImageUrl(cat.coat, "sit", 2), alt: "" }),
+          h("img", { class: "px avatar", src: catImageUrl(cat.coat, "sit", 2, cat.accessory), alt: "" }),
           h(
             "div",
             { class: "info" },
             this.renderCatName(cat),
             h("div", { class: "desc" }, `${coat.name} · `, h("b", null, trait.name), `: ${trait.description}`),
+            h(
+              "div",
+              { class: "hearts", title: `Ikatan: ${toNext}. Setiap hati +${Math.round(BALANCE.heartBonus * 100)}% produksi.` },
+              h("span", { class: "on" }, "♥".repeat(hs)),
+              h("span", { class: "off" }, "♥".repeat(5 - hs)),
+              h("span", { class: "bond-next" }, hs >= 5 ? "maks" : toNext.split(" ")[0]),
+            ),
             h(
               "div",
               { class: "meter-row" },
@@ -453,10 +631,57 @@ export class Ui {
               h("span", { class: "contrib" }, contribution),
             ),
           ),
-          this.renderAssign(cat),
+          h(
+            "div",
+            { class: "cat-actions" },
+            this.renderAssign(cat),
+            this.renderAccessory(cat),
+            h(
+              "button",
+              {
+                class: "btn small",
+                title: "Panggil kucing ini ke dekat kursor",
+                onclick: () => {
+                  this.deps.interactions.callCat(cat.id);
+                  this.deps.sound("meow");
+                },
+              },
+              "Panggil",
+            ),
+          ),
         ),
       );
     }
+    body.append(
+      h(
+        "p",
+        { class: "desc help" },
+        "Klik = elus · gerakkan kursor bolak-balik di atas kucing = usap sampai mendengkur · seret = angkat (jatuhkan di fasilitas untuk menugaskan). Jangan diklik terus-terusan, nanti ngambek!",
+      ),
+    );
+  }
+
+  private renderAccessory(cat: CatState): HTMLElement {
+    const s = this.game.state;
+    const select = h("select", {
+      class: "assign",
+      title: "Aksesori",
+      disabled: s.inventory.accessories.length === 0,
+      onchange: (e: Event) => {
+        const value = (e.target as HTMLSelectElement).value;
+        if (this.game.equipAccessory(cat.id, value === "" ? null : value)) this.deps.sound("pop");
+        (e.target as HTMLSelectElement).blur();
+        this.renderPanel();
+      },
+    });
+    select.append(h("option", { value: "", selected: cat.accessory === null }, s.inventory.accessories.length === 0 ? "Belum ada aksesori" : "Tanpa aksesori"));
+    for (const id of s.inventory.accessories) {
+      const acc = ACCESSORY_BY_ID[id];
+      if (!acc) continue;
+      const wearer = s.cats.find((c) => c.accessory === id && c.id !== cat.id);
+      select.append(h("option", { value: id, selected: cat.accessory === id }, wearer ? `${acc.name} (${wearer.name})` : acc.name));
+    }
+    return select;
   }
 
   private renderCatName(cat: CatState): HTMLElement {
@@ -562,6 +787,28 @@ export class Ui {
       );
     }
     body.append(grid);
+
+    const owns = new Set(s.inventory.accessories);
+    const model = [...s.cats].sort((a, b) => a.adoptedAt - b.adoptedAt)[0];
+    body.append(h("h3", null, `Aksesori · ${owns.size} dari ${ACCESSORIES.length}`));
+    const accGrid = h("div", { class: "dex" });
+    for (const acc of ACCESSORIES) {
+      const has = owns.has(acc.id);
+      const giftOnly = acc.price === null;
+      accGrid.append(
+        h(
+          "div",
+          {
+            class: `dex-cell${has ? "" : giftOnly ? " unknown" : " seen"}`,
+            title: has ? `${acc.name}: ${acc.description}` : giftOnly ? "Hanya bisa didapat sebagai hadiah dari kucing yang sayang padamu." : `Dijual di Toko seharga ${formatFish(acc.price!)} ikan.`,
+          },
+          h("img", { class: "px", src: has || !giftOnly ? catImageUrl(model?.coat ?? "oyen", "sit", 2, acc.id) : silhouetteUrl(2), alt: "" }),
+          h("div", { class: "dex-name" }, has || !giftOnly ? acc.name : "???"),
+          giftOnly ? h("span", { class: "badge r-epik" }, "Hadiah") : null,
+        ),
+      );
+    }
+    body.append(accGrid);
   }
 
   // -------------------------------------------------------------------------
@@ -628,6 +875,17 @@ export class Ui {
     const st = g.state.settings;
     const stats = g.state.stats;
     body.append(
+      h("h3", null, "Cara berinteraksi"),
+      h(
+        "ul",
+        { class: "plain" },
+        h("li", null, h("b", null, "Klik"), " kucing untuk mengelus (bonus semangat +10%)."),
+        h("li", null, h("b", null, "Usap"), ": gerakkan kursor bolak-balik di atas kucing tanpa klik sampai ia mendengkur. Memberi ikatan."),
+        h("li", null, h("b", null, "Seret"), " kucing untuk mengangkatnya. Jatuhkan di atas fasilitas untuk menugaskannya, atau ke dalam kardus."),
+        h("li", null, h("b", null, "Mainan bulu"), " (tombol bulu): kucing mengejar dan menerkam. Tangkapan memberi ikan dan ikatan."),
+        h("li", null, h("b", null, "Camilan"), ": tombol camilan, lalu klik kucing. Ampuh untuk membujuk kucing yang ngambek."),
+        h("li", null, "Setiap hati ikatan +2% produksi. Mulai 3 hati, kucing kadang membawakan hadiah."),
+      ),
       h("h3", null, "Tampilan"),
       h(
         "div",
@@ -651,6 +909,8 @@ export class Ui {
         h("li", null, `Kucing diadopsi: ${stats.catsAdopted}`),
         h("li", null, `Elusan: ${stats.petted}`),
         h("li", null, `Ikan berkilau ditangkap: ${stats.sparklesCaught}`),
+        h("li", null, `Dengkuran: ${stats.purrs} · Camilan diberikan: ${stats.treatsGiven}`),
+        h("li", null, `Bulu ditangkap: ${stats.toyCatches} · Hadiah diterima: ${stats.giftsReceived}`),
         h("li", null, `Batas progres offline: ${offlineCapHours(g.state)} jam`),
       ),
       h("h3", null, "Aplikasi"),
@@ -771,20 +1031,37 @@ export class Ui {
   // -------------------------------------------------------------------------
   // Notifikasi
 
-  toast(message: string, ms = 4000): void {
-    const el = h("div", { class: "card toast" }, message);
+  toast(message: string, ms = 4000, isTip = false): void {
+    const el = h("div", { class: `card toast${isTip ? " tip" : ""}` }, message);
     this.toasts.append(el);
-    while (this.toasts.children.length > 3) this.toasts.firstElementChild?.remove();
+    // Tips hanya tampil sekali, jadi notifikasi biasa yang dibuang lebih dulu bila penuh.
+    while (this.toasts.children.length > 3) {
+      const victim = [...this.toasts.children].find((c) => c !== el && !c.classList.contains("tip")) ?? this.toasts.firstElementChild;
+      victim?.remove();
+    }
     window.setTimeout(() => {
       el.classList.add("out");
       window.setTimeout(() => el.remove(), 400);
     }, ms);
   }
 
-  /** Tips yang hanya tampil sekali per sesi. */
+  /** Tips yang hanya tampil sekali (diingat antar-sesi bila penyimpanan browser tersedia). */
   tip(key: string, message: string, ms = 6000): void {
+    if (this.seenTips.size === 0) {
+      try {
+        for (const k of JSON.parse(localStorage.getItem(TIPS_KEY) ?? "[]") as string[]) this.seenTips.add(k);
+      } catch {
+        // Penyimpanan tidak tersedia: tips cukup diingat selama sesi ini.
+      }
+      this.seenTips.add("");
+    }
     if (this.seenTips.has(key)) return;
     this.seenTips.add(key);
-    this.toast(message, ms);
+    try {
+      localStorage.setItem(TIPS_KEY, JSON.stringify([...this.seenTips].filter(Boolean)));
+    } catch {
+      // Abaikan.
+    }
+    this.toast(message, ms, true);
   }
 }

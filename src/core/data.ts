@@ -1,6 +1,7 @@
 // Data konten game. Ubah angka di sini untuk balancing tanpa menyentuh logika.
 
 import type {
+  AccessoryDef,
   CoatDef,
   FacilityDef,
   FacilityId,
@@ -323,6 +324,28 @@ function buildUpgrades(): UpgradeDef[] {
 export const UPGRADES: UpgradeDef[] = buildUpgrades();
 export const UPGRADE_BY_ID: Record<string, UpgradeDef> = Object.fromEntries(UPGRADES.map((u) => [u.id, u]));
 
+export const ACCESSORIES: AccessoryDef[] = [
+  { id: "pita", name: "Pita merah", slot: "head", price: 250, description: "Manis dan selalu cocok." },
+  { id: "topi-pesta", name: "Topi pesta", slot: "head", price: 600, description: "Setiap hari adalah ulang tahun." },
+  { id: "kalung-lonceng", name: "Kalung lonceng", slot: "neck", price: 1_200, description: "Kling-kling ke mana pun ia pergi." },
+  { id: "peci", name: "Peci", slot: "head", price: 3_000, description: "Rapi untuk acara keluarga." },
+  { id: "bandana", name: "Bandana merah", slot: "neck", price: 4_500, description: "Gaya koboi gang sebelah." },
+  { id: "topi-koki", name: "Topi koki", slot: "head", price: 9_000, description: "Ahli memasak... memakan." },
+  { id: "dasi-kupu", name: "Dasi kupu-kupu", slot: "neck", price: 20_000, description: "Siap untuk makan malam mewah." },
+  { id: "kacamata", name: "Kacamata hitam", slot: "face", price: 45_000, description: "Terlalu keren untuk peduli." },
+  { id: "blangkon", name: "Blangkon", slot: "head", price: 120_000, description: "Penutup kepala khas Jawa yang berwibawa." },
+  { id: "topi-penyihir", name: "Topi penyihir", slot: "head", price: 400_000, description: "Ikan muncul dari mana-mana." },
+  { id: "bunga", name: "Bunga sepatu", slot: "head", price: null, description: "Hadiah dari kucing yang sayang padamu." },
+  { id: "kacamata-bulat", name: "Kacamata bulat", slot: "face", price: null, description: "Hadiah: tampang kutu buku." },
+  { id: "syal", name: "Syal rajut", slot: "neck", price: null, description: "Hadiah: hangat dan penuh cinta." },
+  { id: "mahkota", name: "Mahkota", slot: "head", price: null, description: "Hadiah langka untuk raja atau ratu strip." },
+];
+
+export const ACCESSORY_BY_ID: Record<string, AccessoryDef> = Object.fromEntries(ACCESSORIES.map((a) => [a.id, a]));
+
+/** Benda kecil yang kadang dibawa kucing sebagai hadiah. */
+export const TRINKETS: readonly string[] = ["Daun kering", "Kaus kaki", "Tutup botol", "Bulu burung", "Karet gelang", "Kancing baju"];
+
 export const CAT_NAMES: readonly string[] = [
   "Mochi", "Kopi", "Gembul", "Kumis", "Bulan", "Nala", "Cimol", "Dodol", "Tahu", "Tempe",
   "Bakwan", "Cilok", "Gula", "Susu", "Kacang", "Koko", "Mimi", "Momo", "Pipi", "Bolu",
@@ -363,4 +386,32 @@ export const BALANCE = {
   /** Ongkos memberi makan semua kucing = produksi selama sekian detik. */
   feedCostSeconds: 60,
   feedMinCost: 10,
+
+  // --- Ikatan (v2) ---
+  bondPerHeart: 20,
+  maxBond: 100,
+  /** Bonus produksi fasilitas per hati ikatan kucing yang bekerja di sana. */
+  heartBonus: 0.02,
+  bondPerPet: 1,
+  petBondCooldownMs: 3_000,
+  bondPerPurr: 5,
+  /** Ikatan dari dengkuran dibatasi jeda per kucing. */
+  purrCooldownMs: 12_000,
+  bondPerTreat: 8,
+  bondPerToyCatch: 4,
+  toyCatchCooldownMs: 8_000,
+  /** Hadiah ikan dari menangkap mainan = produksi selama sekian detik. */
+  toyRewardSeconds: 8,
+
+  // --- Camilan (v2) ---
+  treatCostSeconds: 30,
+  treatMinCost: 5,
+  startingTreats: 3,
+
+  // --- Hadiah dari kucing (v2) ---
+  giftMinHearts: 3,
+  /** Peluang per menit online untuk setiap kucing yang memenuhi syarat. */
+  giftChancePerMinute: 1 / 25,
+  maxGiftsOnStrip: 3,
+  giftFishSeconds: 120,
 } as const;

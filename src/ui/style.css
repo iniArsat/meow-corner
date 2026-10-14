@@ -162,6 +162,30 @@ body {
   padding: 4px 8px;
 }
 
+.btn-mode {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 7px;
+  min-height: 28px;
+}
+
+.btn-mode img {
+  height: 16px;
+  width: auto;
+}
+
+.btn-mode.active {
+  background: #ffe1a8;
+  color: var(--ink);
+  box-shadow: 0 0 0 2px var(--accent), 0 2px 0 var(--ink);
+}
+
+.mode-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .btn.has-dot::after {
   content: "";
   position: absolute;
@@ -375,7 +399,7 @@ body {
 
 .avatar {
   width: 48px;
-  height: 34px;
+  height: 46px;
   flex: none;
   object-fit: contain;
 }
@@ -417,6 +441,50 @@ body {
   text-align: right;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+.thumb.cat-thumb {
+  height: 46px;
+}
+
+.cat-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  flex: none;
+}
+
+.hearts {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  margin-top: 2px;
+  font-size: 12px;
+  letter-spacing: 1px;
+  cursor: help;
+}
+
+.hearts .on {
+  color: #ef5b7b;
+}
+
+.hearts .off {
+  color: #e2d3bd;
+}
+
+.bond-next {
+  margin-left: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0;
+  color: var(--ink-soft);
+}
+
+.help {
+  margin-top: 10px;
+  padding: 6px 8px;
+  background: var(--paper-2);
+  border-radius: 8px;
 }
 
 .assign {
@@ -489,7 +557,7 @@ body {
 
 .dex-cell img {
   width: 48px;
-  height: 34px;
+  height: 46px;
   object-fit: contain;
 }
 
@@ -585,7 +653,7 @@ ul.plain {
 
 .dialog-cat img {
   width: 72px;
-  height: 51px;
+  height: 69px;
   object-fit: contain;
   flex: none;
 }
