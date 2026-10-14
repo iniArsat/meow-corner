@@ -4,6 +4,10 @@ Game idle kucing yang tinggal di strip bawah layar desktop. Kucing-kucing berjal
 
 ![Tampilan strip](docs/screenshot.png)
 
+## Unduh dan main
+
+Buka halaman **[Releases](https://github.com/iniArsat/meow-corner/releases/latest)**, unduh file yang berakhiran `-setup.exe`, lalu klik dua kali untuk memasang. Installer dibuat otomatis oleh GitHub Actions setiap ada perubahan di branch `main`.
+
 ## Isi versi 0.1 (MVP)
 
 - **Strip transparan** selebar layar, menempel di atas taskbar, selalu di atas jendela lain.
