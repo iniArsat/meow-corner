@@ -180,6 +180,51 @@ export class Effects {
     this.add(g, x, y, { life: 0.5, grow: 2.6 });
   }
 
+  /** Kilat putih sesaat (kamera). */
+  flash(width: number, height: number): void {
+    const g = new Sprite(shapeTexture("pixel"));
+    g.width = width;
+    g.height = height;
+    g.tint = 0xffffff;
+    this.layer.addChild(g);
+    this.particles.push({
+      node: g,
+      vx: 0,
+      vy: 0,
+      gravity: 0,
+      drag: 0,
+      life: 0.45,
+      maxLife: 0.45,
+      spin: 0,
+      grow: 1,
+      baseScale: 1,
+      floor: null,
+      wobble: 0,
+      phase: 0,
+      baseAlpha: 0.7,
+    });
+  }
+
+  /** Hujan konfeti kecil (merayakan). */
+  confetti(x: number, y: number, n = 18): void {
+    if (this.calm) n = Math.min(n, 4);
+    const s = this.scale;
+    const colors = [0xef5b7b, 0xffd84d, 0x4aa3df, 0x8cc56d, 0xc77dff];
+    for (let i = 0; i < n; i++) {
+      const g = new Sprite(shapeTexture("pixel"));
+      g.anchor.set(0.5);
+      g.tint = colors[i % colors.length];
+      this.add(g, x + rand(-10, 10) * s, y, {
+        vx: rand(-40, 40) * s,
+        vy: rand(-60, -25) * s,
+        gravity: 90 * s,
+        life: rand(0.9, 1.5),
+        spin: rand(-8, 8),
+        scale: s,
+      });
+    }
+  }
+
   text(x: number, y: number, text: string, color = 0xffe08a, size = 15): void {
     const t = new Text({ text, style: { ...TEXT_STYLE, fill: color, fontSize: size } });
     t.anchor.set(0.5, 1);

@@ -164,6 +164,99 @@ export interface Stats {
   toyCatches: number;
   giftsReceived: number;
   purrs: number;
+  catsReleased: number;
+  remindersFired: number;
+  focusSessions: number;
+  focusMinutes: number;
+  todosDone: number;
+  wellnessDone: number;
+  photos: number;
+}
+
+// ---------------------------------------------------------------------------
+// Asisten (v3): pengingat, timer fokus, pengingat sehat, daftar tugas.
+
+export type Repeat = "once" | "daily" | "weekdays";
+
+export interface Reminder {
+  id: string;
+  text: string;
+  /** Jam lokal "HH:MM". */
+  time: string;
+  repeat: Repeat;
+  /** Tanggal lokal "YYYY-MM-DD", hanya untuk pengingat sekali. */
+  date: string | null;
+  enabled: boolean;
+  /** Waktu kejadian terakhir yang sudah berbunyi (ms epoch), 0 bila belum. */
+  lastFired: number;
+  /** Ditunda sampai waktu ini, atau null. */
+  snoozeUntil: number | null;
+  createdAt: number;
+}
+
+export interface Todo {
+  id: string;
+  text: string;
+  done: boolean;
+  createdAt: number;
+  doneAt: number | null;
+  /** Hadiah sudah diberikan (mencentang ulang tidak memberi hadiah lagi). */
+  rewarded: boolean;
+}
+
+export type FocusPhase = "idle" | "focus" | "break";
+
+export interface FocusState {
+  phase: FocusPhase;
+  startedAt: number;
+  endsAt: number;
+  focusMinutes: number;
+  breakMinutes: number;
+  todayCount: number;
+  todayDate: string;
+}
+
+export type WellnessKind = "water" | "stretch" | "eyes";
+
+export interface WellnessState {
+  /** Selang waktu dalam menit; 0 = mati. */
+  intervals: Record<WellnessKind, number>;
+  /** Waktu berbunyi berikutnya (ms epoch). */
+  next: Record<WellnessKind, number>;
+  /** Jam aktif "HH:MM" (pengingat sehat hanya berbunyi di antaranya). */
+  from: string;
+  to: string;
+}
+
+export interface AssistantState {
+  reminders: Reminder[];
+  todos: Todo[];
+  focus: FocusState;
+  wellness: WellnessState;
+  /** Kucing mengeong setiap pergantian jam (08.00–22.00). */
+  chime: boolean;
+  /** Jam tidur "HH:MM", atau null bila mati. */
+  bedtime: string | null;
+  /** Tanggal terakhir pengingat tidur berbunyi. */
+  lastBedtime: string;
+  /** Pergantian jam terakhir yang sudah dibunyikan (ms epoch). */
+  lastChime: number;
+  /** Tampilkan jam di HUD. */
+  clock: boolean;
+  /** Munculkan strip yang disembunyikan saat pengingat berbunyi. */
+  showOnAlert: boolean;
+  /** Kirim notifikasi Windows untuk pengingat dan timer fokus. */
+  nativeNotify: boolean;
+  counter: number;
+  todoRewardDate: string;
+  todoRewardCount: number;
+}
+
+export interface DailyState {
+  /** Tanggal lokal "YYYY-MM-DD" hadiah harian terakhir. */
+  lastDate: string;
+  streak: number;
+  best: number;
 }
 
 export interface GameState {
@@ -192,6 +285,10 @@ export interface GameState {
   giftCounter: number;
   settings: Settings;
   stats: Stats;
+  assistant: AssistantState;
+  /** Id prestasi yang sudah terbuka. */
+  achievements: string[];
+  daily: DailyState;
 }
 
 /** Konteks yang memengaruhi perhitungan produksi. */

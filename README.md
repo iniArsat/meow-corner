@@ -8,6 +8,25 @@ Game idle kucing yang tinggal di strip bawah layar desktop. Kucing-kucing berjal
 
 Buka halaman **[Releases](https://github.com/iniArsat/meow-corner/releases/latest)**, unduh file yang berakhiran `-setup.exe`, lalu klik dua kali untuk memasang. Installer dibuat otomatis oleh GitHub Actions setiap ada perubahan di branch `main`.
 
+## Baru di versi 0.3: Asisten Kucing
+
+**Pengingat yang diantar kucing.** Atur pesan dan jamnya, misalnya "Meeting tim" pukul 17.00, untuk sekali, setiap hari, atau Senin–Jumat. Saat waktunya tiba, kucing yang paling sayang padamu berlari ke tengah layar membawa papan pesan, melompat-lompat, dan mengeong sampai kamu menekan **Oke** (atau mengeklik kucingnya). Bisa ditunda 5 atau 15 menit.
+- Pengingat juga muncul sebagai **notifikasi Windows**, jadi tetap terdengar saat strip disembunyikan atau saat presentasi layar penuh. Jadwalnya dijaga oleh sisi Rust, bukan timer halaman web, sehingga tetap tepat waktu.
+- Pengingat yang terlewat saat komputer tidur atau aplikasi tertutup dilaporkan sekali, tidak bertubi-tubi.
+
+**Fitur asisten lainnya** (tombol lonceng di panel bawah):
+- **Timer fokus (pomodoro)** 15/25/45/60 menit. Hitung mundur tampil di panel, kucing ikut tenang, lalu merayakan dengan konfeti dan mengingatkan istirahat. Setiap sesi memberi ikan dan ikatan.
+- **Daftar tugas.** Setiap tugas yang dicentang dihadiahi ikan (maksimal 20 per hari).
+- **Pengingat sehat:** minum air, peregangan (kucing-kucing ikut meregangkan badan), dan istirahat mata, hanya di jam aktif.
+- **Pengingat jam tidur** (kucing menguap), **kucing mengeong setiap jam**, dan **jam** di panel bawah.
+
+**Lebih seru:**
+- **Lepaskan kucing** yang sudah diadopsi (panel Kucing → Lepaskan). Dia pamit dengan hati, lalu berjalan keluar layar.
+- **24 prestasi** dengan hadiah camilan atau ikan.
+- **Hadiah harian** yang dibawa kucing. Hari berturut-turut memberi hadiah lebih besar, dan hari ke-7 memberi aksesori langka.
+- **Mode foto:** simpan pemandangan strip sebagai PNG berbingkai ke folder Gambar › Meow Corner.
+- Pengingat dan daftar tugas tidak ikut terhapus saat "Hapus semua progres".
+
 ## Baru di versi 0.2: kucing yang bisa diajak berinteraksi
 
 **Interaksi langsung dengan kursor**
@@ -119,6 +138,8 @@ src/
     data.ts      Semua angka balancing, daftar kucing, fasilitas, upgrade
     economy.ts   Rumus harga, produksi, offline, prestige
     game.ts      Simulasi dan aksi pemain, mengirim event
+    assistant.ts Jadwal pengingat, timer fokus, pengingat sehat (waktu lokal)
+    achievements.ts Daftar prestasi dan hadiahnya
     state.ts     State awal dan migrasi simpanan
     save.ts      Simpan/muat dengan cadangan
   render/      Tampilan PixiJS
@@ -127,10 +148,11 @@ src/
     stage.ts     Strip, input mouse, keputusan kucing, mainan, camilan, hadiah, sosial
     effects.ts   Partikel (hati, bintang, not musik, debu, remah)
     ambient.ts   Kupu-kupu dan kunang-kunang
-  ui/          HUD, panel, dialog (HTML + CSS)
+  ui/          HUD, panel, dialog (HTML + CSS); assistantUi.ts = tab Asisten dan kartu pesan
   platform/    Jembatan ke Tauri dan klik tembus
 src-tauri/
-  src/lib.rs   Jendela, klik tembus, tray, deteksi layar penuh, file simpanan
+  src/lib.rs   Jendela, klik tembus, tray, deteksi layar penuh, file simpanan,
+               penjadwal pengingat + notifikasi Windows, penyimpanan foto
 tests/         Tes unit Vitest
 ```
 

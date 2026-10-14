@@ -61,6 +61,50 @@ export async function onVisibilityChanged(cb: (visible: boolean) => void): Promi
   cb(await invoke<boolean>("window_visible"));
 }
 
+/** Munculkan strip yang disembunyikan pengguna (tidak berlaku saat ada aplikasi layar penuh). */
+export async function showStrip(): Promise<void> {
+  if (!isTauri) return;
+  await invoke("show_strip");
+}
+
+export interface ScheduleItem {
+  key: string;
+  at: number;
+  title: string;
+  body: string;
+  notify: boolean;
+}
+
+/** Serahkan jadwal ke sisi Rust, yang membunyikannya tepat waktu walau jendela tersembunyi. */
+export async function setSchedule(items: ScheduleItem[]): Promise<void> {
+  if (!isTauri) return;
+  await invoke("set_schedule", { items });
+}
+
+export async function onScheduleDue(cb: (key: string) => void): Promise<void> {
+  if (!isTauri) return;
+  await listen<string>("schedule-due", (e) => cb(e.payload));
+}
+
+/** Simpan PNG ke folder Gambar/Meow Corner; mengembalikan path, atau null di browser. */
+export async function savePhoto(name: string, png: Uint8Array): Promise<string | null> {
+  if (!isTauri) {
+    const url = URL.createObjectURL(new Blob([png as BlobPart], { type: "image/png" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${name}.png`;
+    a.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+    return null;
+  }
+  return invoke<string>("save_photo", { name, data: Array.from(png) });
+}
+
+export async function openPhotoFolder(): Promise<void> {
+  if (!isTauri) return;
+  await invoke("open_photo_folder");
+}
+
 class TauriSaveBackend implements SaveBackend {
   load(): Promise<string | null> {
     return invoke<string | null>("load_save");

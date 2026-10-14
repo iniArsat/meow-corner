@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { ACCESSORIES, BALANCE } from "../src/core/data";
 import { catContribution, hearts } from "../src/core/economy";
 import { Game, type GameEvent } from "../src/core/game";
-import { createInitialState, migrateState } from "../src/core/state";
+import { dateKey } from "../src/core/assistant";
+import { SAVE_VERSION, createInitialState, migrateState } from "../src/core/state";
 
 const NOW = 1_800_000_000_000;
 
@@ -130,6 +131,8 @@ describe("hadiah dari kucing", () => {
 
   it("kucing dengan ikatan rendah tidak membawa hadiah", () => {
     const { game } = newGame(seeded(3));
+    // Hadiah harian (v3) juga berupa kado; anggap sudah diterima hari ini.
+    game.state.daily.lastDate = dateKey(NOW);
     for (let t = 1; t <= 600; t++) game.tick(NOW + t * 10_000);
     expect(game.state.gifts.length).toBe(0);
   });
@@ -173,7 +176,7 @@ describe("migrasi v1 ke v2", () => {
       facilities: { mangkuk: 2 },
     };
     const s = migrateState(v1, NOW)!;
-    expect(s.version).toBe(2);
+    expect(s.version).toBe(SAVE_VERSION);
     expect(s.cats[0].bond).toBe(0);
     expect(s.cats[0].accessory).toBeNull();
     expect(s.inventory.treats).toBe(BALANCE.startingTreats);
@@ -196,5 +199,33 @@ describe("migrasi v1 ke v2", () => {
     expect(s.cats.map((c) => c.accessory)).toEqual(["peci", null, null]);
     expect(s.inventory.accessories).toEqual(["peci"]);
     expect(s.gifts).toHaveLength(1);
+  });
+});
+
+describe("melepaskan kucing", () => {
+  it("kucing yang diadopsi bisa dilepas, kecuali kucing terakhir", () => {
+    const { game, events, oyen } = newGame();
+    expect(game.releaseCat(oyen.id)).toBeNull();
+    const mochi = { ...oyen, id: "cat-2", name: "Mochi", coat: "siam", accessory: "pita" };
+    game.state.cats.push(mochi);
+    game.state.inventory.accessories.push("pita");
+    const gift = game.dropGift(mochi, NOW, { kind: "treats", amount: 2 });
+
+    const released = game.releaseCat("cat-2");
+    expect(released?.name).toBe("Mochi");
+    expect(game.state.cats.map((c) => c.id)).toEqual([oyen.id]);
+    expect(game.state.stats.catsReleased).toBe(1);
+    expect(events.some((e) => e.type === "released" && e.cat.id === "cat-2")).toBe(true);
+    // Aksesorinya tetap milik pemain dan bisa dipakai kucing lain.
+    expect(game.equipAccessory(oyen.id, "pita")).toBe(true);
+    // Hadiah dari kucing yang sudah pergi masih bisa diambil.
+    expect(game.collectGift(gift.id, NOW)?.title).toContain("Kucingmu");
+    expect(game.releaseCat(oyen.id)).toBeNull();
+  });
+
+  it("statistik kucing dilepas ikut tersimpan", () => {
+    const s = migrateState({ cats: [{ coat: "oyen" }], stats: { catsReleased: 2 } }, NOW)!;
+    expect(s.stats.catsReleased).toBe(2);
+    expect(createInitialState(NOW).stats.catsReleased).toBe(0);
   });
 });

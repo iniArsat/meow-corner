@@ -94,6 +94,17 @@ const HEAD_ALERT: Grid = [
   ".hhmmmhh.",
 ];
 
+/** Menguap: mata terpejam, mulut terbuka lebar. */
+const HEAD_YAWN: Grid = [
+  ".r.....r.",
+  "rpr...rpr",
+  "hhhhhhhhh",
+  "hxxhhhxxh",
+  "hhhmpmhhh",
+  "hhmkkkmhh",
+  ".hmkpkmh.",
+];
+
 const BODY: Grid = [
   ".bbbbbbbbbbb.",
   "bbbbbbbbbbbbc",
@@ -146,7 +157,12 @@ const BODY_HANG: Grid = [
   ".bbbbb.",
 ];
 
+/** Peregangan: badan belakang tinggi, depan rendah. */
+const BODY_HIGH: Grid = [".bbbbbb.", "bbbbbbbb", "bbbbbbbb", "bbbbbbbb", ".bbbbbb."];
+const BODY_LOW: Grid = ["bbbbbbb.", "bbbbbbcc", "bbbbbbcc", ".bbbbbc."];
+
 const LEG: Grid = ["ll", "ll", "ll"];
+const LEG_TALL: Grid = ["ll", "ll", "ll", "ll", "ll", "ll"];
 const LEG_LONG: Grid = ["ll", "ll", "ll", "ll"];
 const LEG_SHORT: Grid = ["ll", "ll"];
 const LEG_SIDE: Grid = ["lll", "lll"];
@@ -225,6 +241,18 @@ export const CAT_POSES = {
   sitBlink: cat([...SIT_BASE(TAIL_SIT), { name: "head", grid: HEAD_CLOSED, x: 10, y: 3, ring: true }]),
   sitHappy: cat([...SIT_BASE(TAIL_SIT_2), { name: "head", grid: HEAD_HAPPY, x: 10, y: 3, ring: true }]),
   sitAlert: cat([...SIT_BASE(TAIL_SIT), { name: "head", grid: HEAD_ALERT, x: 10, y: 3, ring: true }]),
+  sitYawn: cat([...SIT_BASE(TAIL_SIT_2), { name: "head", grid: HEAD_YAWN, x: 10, y: 3, ring: true }]),
+  /** Peregangan ala kucing: kaki depan terjulur, pantat naik. */
+  stretch: cat([
+    { name: "tail", grid: TAIL_UP, x: 3, y: 0 },
+    { name: "leg", grid: LEG_TALL, x: 5, y: 10 },
+    { name: "leg", grid: LEG_TALL, x: 8, y: 10 },
+    { name: "body", grid: BODY_HIGH, x: 4, y: 5, ring: true },
+    { name: "body", grid: BODY_LOW, x: 10, y: 8 },
+    { name: "leg", grid: LEG_SIDE, x: 13, y: 14 },
+    { name: "leg", grid: LEG_SIDE, x: 19, y: 14 },
+    { name: "head", grid: HEAD_HAPPY, x: 14, y: 7, ring: true },
+  ]),
   groom: cat([
     ...SIT_BASE(TAIL_SIT),
     { name: "head", grid: HEAD_CLOSED, x: 10, y: 3, ring: true },
@@ -795,6 +823,41 @@ export const OBJECTS = {
     grid: ["...GG", "..GgG", ".GgG.", "GgG..", "G...."],
     colors: { G: "#5d9b47", g: "#8cc56d" },
     outline: "#1f3a14",
+  },
+  bell: {
+    grid: ["...Y...", "..YYY..", ".YyYYY.", ".YyYYY.", ".YYYYY.", "YYYYYYY", "...K..."],
+    colors: { Y: "#f2c14e", y: "#fff3b0", K: "#8a5a1c" },
+    outline: "#5a3a08",
+  },
+  water: {
+    grid: ["..B..", ".BBB.", "BwBBB", "BwBBB", "BBBBB", ".BBB."],
+    colors: { B: "#4aa3df", w: "#c9eef7" },
+    outline: "#14304a",
+  },
+  clock: {
+    grid: [".WWWWW.", "WWWKWWW", "WWWKWWW", "WWWKKWW", "WWWWWWW", ".WWWWW."],
+    colors: { W: "#fffaf0", K: "#2a1d1a" },
+    outline: "#6b5850",
+  },
+  tomato: {
+    grid: ["..GgG..", ".RRGRR.", "RrRRRRR", "RrRRRRR", "RRRRRRR", ".RRRRR."],
+    colors: { R: "#e2443e", r: "#ff8a7a", G: "#5d9b47", g: "#8cc56d" },
+    outline: "#5a1414",
+  },
+  trophy: {
+    grid: ["YYYYYYY", "YyYYYYY", ".YyYYY.", "..YYY..", "...Y...", "..YYY..", ".BBBBB."],
+    colors: { Y: "#f2c14e", y: "#fff3b0", B: "#8a5a35" },
+    outline: "#5a3a08",
+  },
+  eye: {
+    grid: ["..WWW..", ".WWKWW.", "WWKKKWW", ".WWKWW.", "..WWW.."],
+    colors: { W: "#fffaf0", K: "#3f8fd1" },
+    outline: "#2a1d1a",
+  },
+  moon: {
+    grid: ["..YYY", ".YY..", "YY...", "YY...", "YY...", ".YY..", "..YYY"],
+    colors: { Y: "#ffe08a" },
+    outline: "#5a4a10",
   },
   butterfly: {
     grid: ["YY.k.YY", "YYYkYYY", "yYYkYYy", ".YYkYY.", ".yY.Yy."],

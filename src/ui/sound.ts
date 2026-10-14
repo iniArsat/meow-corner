@@ -90,7 +90,11 @@ export type SoundId =
   | "chirp"
   | "pop"
   | "crunch"
-  | "levelup";
+  | "levelup"
+  | "alarm"
+  | "chime"
+  | "shutter"
+  | "achievement";
 
 export function playSound(id: SoundId, enabled: boolean): void {
   if (!enabled) return;
@@ -137,6 +141,27 @@ export function playSound(id: SoundId, enabled: boolean): void {
     case "levelup":
       tone([660, 880], 0.12, "triangle", 0.04);
       tone([880, 1320], 0.2, "triangle", 0.04, 0.12);
+      break;
+    case "alarm":
+      // Tiga eongan naik: cukup jelas untuk pengingat, tidak menyakitkan telinga.
+      for (let i = 0; i < 3; i++) {
+        const p = 1 + i * 0.12;
+        tone([600 * p, 950 * p, 780 * p], 0.32, "sawtooth", 0.03, i * 0.42);
+      }
+      tone([1046, 1318], 0.25, "triangle", 0.04, 1.3);
+      break;
+    case "chime":
+      tone([1318], 0.6, "sine", 0.05);
+      tone([988], 0.8, "sine", 0.04, 0.35);
+      break;
+    case "shutter":
+      hiss(0.05, "highpass", 4000, 0.08);
+      hiss(0.07, "bandpass", 2200, 0.06, 0.09);
+      break;
+    case "achievement":
+      tone([523, 659], 0.12, "triangle", 0.045);
+      tone([659, 784], 0.12, "triangle", 0.045, 0.12);
+      tone([784, 1046], 0.3, "triangle", 0.05, 0.24);
       break;
   }
 }

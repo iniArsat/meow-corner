@@ -60,7 +60,10 @@ export type CatMode =
   | "playfight"
   | "arrive"
   | "wait"
-  | "leave";
+  | "leave"
+  | "announce"
+  | "stretch"
+  | "yawn";
 
 interface Anim {
   frames: CatPose[];
@@ -98,10 +101,13 @@ const ANIMS: Record<CatMode, Anim> = {
   arrive: WALK,
   wait: { frames: ["sit"], seconds: 1 },
   leave: WALK,
+  announce: { frames: ["sitAlert", "sitAlert", "sitHappy"], seconds: 0.6 },
+  stretch: { frames: ["stretch"], seconds: 1 },
+  yawn: { frames: ["sitYawn", "sitBlink", "sitBlink"], seconds: 0.9 },
 };
 
 /** Mode yang tidak terganggu kalau kucing ditinggal sendiri dan tidak sedang bergerak. */
-const CALM: ReadonlySet<CatMode> = new Set(["idle", "sit", "groom", "watch", "wait", "happy", "proud", "beg", "sulk"]);
+const CALM: ReadonlySet<CatMode> = new Set(["idle", "sit", "groom", "watch", "wait", "happy", "proud", "beg", "sulk", "announce"]);
 
 /** Mode yang bisa ditimpa oleh keinginan lain (mainan, camilan, ajakan bermain). */
 const INTERRUPTIBLE: ReadonlySet<CatMode> = new Set([
@@ -200,6 +206,8 @@ export class CatActor {
   lastHardLanding = 0;
   /** Tempat yang sedang dituju (agar dua kucing tidak berebut tempat yang sama). */
   claim: string | null = null;
+  /** Kucing yang dilepas: koordinat x tujuan keluar layar. */
+  exitTo: number | null = null;
   /** Kegiatan yang sedang dikoordinasikan Stage (sosial, mainan, hadiah...). */
   task: string | null = null;
   /** Kursor dekat kepala: kucing tampak penasaran. */
@@ -306,6 +314,13 @@ export class CatActor {
         this.modeDuration = duration ?? rand(15, 40);
         this.sprite.visible = false;
         break;
+      case "stretch":
+        this.modeDuration = duration ?? rand(2, 3.2);
+        break;
+      case "yawn":
+        this.modeDuration = duration ?? 2.7;
+        break;
+      case "announce":
       case "beg":
       case "wait":
       case "held":
@@ -772,6 +787,12 @@ export class CatActor {
       case "startled": {
         const t = Math.min(1, this.modeTime / 0.4);
         this.hop = Math.sin(t * Math.PI) * 7 * s;
+        break;
+      }
+      case "announce": {
+        // Melompat-lompat kecil agar pemain menoleh.
+        const phase = this.modeTime % 1.8;
+        if (phase < 0.36) this.hop = Math.sin((phase / 0.36) * Math.PI) * 5 * s;
         break;
       }
       case "purr":

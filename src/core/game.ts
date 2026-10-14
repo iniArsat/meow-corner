@@ -27,8 +27,38 @@ import {
   productionPerSecond,
   unlockedRarities,
 } from "./economy";
+import { ACHIEVEMENTS, ACHIEVEMENT_BY_ID } from "./achievements";
+import {
+  HOUR,
+  MINUTE as MIN,
+  WELLNESS_TEXT,
+  wellnessAt,
+  buildSchedule,
+  dateKey,
+  defaultDateFor,
+  formatClock,
+  atDateTime,
+  nextReminderAt,
+  parseTime,
+  startOfDay,
+  type Alert,
+  type DueItem,
+} from "./assistant";
 import { createInitialState } from "./state";
-import type { CatState, FacilityId, GameState, GiftItem, GiftState, Rarity, UpgradeDef } from "./types";
+import type {
+  AssistantState,
+  CatState,
+  FacilityId,
+  GameState,
+  GiftItem,
+  GiftState,
+  Rarity,
+  Reminder,
+  Repeat,
+  Todo,
+  UpgradeDef,
+  WellnessKind,
+} from "./types";
 import { FACILITY_IDS } from "./types";
 
 export type GameEvent =
@@ -39,6 +69,7 @@ export type GameEvent =
   | { type: "visitorReady" }
   | { type: "visitorLeft" }
   | { type: "adopted"; cat: CatState }
+  | { type: "released"; cat: CatState }
   | { type: "fed" }
   | { type: "petted"; catId: string }
   | { type: "sparkleAppeared" }
@@ -54,7 +85,12 @@ export type GameEvent =
   | { type: "toyCatch"; catId: string; reward: number }
   | { type: "inventory" }
   | { type: "giftDropped"; gift: GiftState }
-  | { type: "giftCollected"; gift: GiftState; title: string; detail: string };
+  | { type: "giftCollected"; gift: GiftState; title: string; detail: string }
+  | { type: "assistant" }
+  | { type: "alert"; alert: Alert }
+  | { type: "achievement"; ids: string[] }
+  | { type: "daily"; streak: number; catId: string }
+  | { type: "todoDone"; todoId: string; reward: number };
 
 type Listener = (e: GameEvent) => void;
 
@@ -125,7 +161,14 @@ export class Game {
     this.updateVisitor(now);
     this.updateSparkle(now);
     s.lastTick = now;
+    if (now - this.lastSlowCheck >= 1000) {
+      this.lastSlowCheck = now;
+      this.checkDaily(now);
+      this.checkAchievements(now);
+    }
   }
+
+  private lastSlowCheck = 0;
 
   private addFish(n: number): void {
     if (!(n > 0)) return;
@@ -484,6 +527,25 @@ export class Game {
     return true;
   }
 
+  /**
+   * Lepaskan kucing yang sudah diadopsi: ia pergi dan tidak kembali. Kucing
+   * terakhir tidak bisa dilepas. Aksesorinya kembali ke inventaris, dan hadiah
+   * yang sudah ia letakkan tetap bisa diambil.
+   */
+  releaseCat(catId: string): CatState | null {
+    const s = this.state;
+    if (s.cats.length <= 1) return null;
+    const index = s.cats.findIndex((c) => c.id === catId);
+    if (index < 0) return null;
+    const [cat] = s.cats.splice(index, 1);
+    this.lastPetBond.delete(catId);
+    this.lastToyCatch.delete(catId);
+    this.lastPurr.delete(catId);
+    s.stats.catsReleased += 1;
+    this.emit({ type: "released", cat });
+    return cat;
+  }
+
   renameCat(catId: string, name: string): boolean {
     const cat = this.state.cats.find((c) => c.id === catId);
     const clean = name.trim().slice(0, 16);
@@ -620,6 +682,419 @@ export class Game {
     this.state.stats.sparklesCaught += 1;
     this.emit({ type: "sparkleCaught", reward });
     return reward;
+  }
+
+  // -------------------------------------------------------------------------
+  // Asisten (v3): pengingat, fokus, pengingat sehat, daftar tugas
+
+  private get assistant(): AssistantState {
+    return this.state.assistant;
+  }
+
+  private assistantId(prefix: string, now: number): string {
+    this.assistant.counter += 1;
+    return `${prefix}-${this.assistant.counter}-${now.toString(36)}`;
+  }
+
+  private assistantChanged(): void {
+    this.emit({ type: "assistant" });
+  }
+
+  /** Jadwal kejadian berikutnya, untuk pengecek di sisi Rust atau di browser. */
+  schedule(now: number): DueItem[] {
+    return buildSchedule(this.assistant, now);
+  }
+
+  addReminder(input: { text: string; time: string; repeat: Repeat; date?: string | null }, now: number): Reminder | null {
+    const text = input.text.trim().slice(0, 80);
+    if (!text || !parseTime(input.time)) return null;
+    let date: string | null = null;
+    if (input.repeat === "once") {
+      date = input.date && atDateTime(input.date, input.time) !== null ? input.date : defaultDateFor(input.time, now);
+      // Pengingat sekali di masa lalu langsung berbunyi; tolak saja.
+      if ((atDateTime(date, input.time) ?? 0) <= now) return null;
+    }
+    const reminder: Reminder = {
+      id: this.assistantId("r", now),
+      text,
+      time: input.time,
+      repeat: input.repeat,
+      date,
+      enabled: true,
+      lastFired: 0,
+      snoozeUntil: null,
+      createdAt: now,
+    };
+    this.assistant.reminders.push(reminder);
+    this.assistantChanged();
+    return reminder;
+  }
+
+  setReminderEnabled(id: string, enabled: boolean, now: number): boolean {
+    const r = this.assistant.reminders.find((x) => x.id === id);
+    if (!r) return false;
+    if (enabled && r.repeat === "once" && (atDateTime(r.date ?? "", r.time) ?? 0) <= now) return false;
+    r.enabled = enabled;
+    r.snoozeUntil = null;
+    // Menyalakan lagi tidak membunyikan kejadian yang sudah lewat.
+    if (enabled && r.repeat !== "once") r.createdAt = now;
+    this.assistantChanged();
+    return true;
+  }
+
+  deleteReminder(id: string): void {
+    const a = this.assistant;
+    a.reminders = a.reminders.filter((r) => r.id !== id);
+    this.assistantChanged();
+  }
+
+  snoozeReminder(id: string, minutes: number, now: number): boolean {
+    const r = this.assistant.reminders.find((x) => x.id === id);
+    if (!r) return false;
+    r.enabled = true;
+    r.snoozeUntil = now + minutes * MIN;
+    this.assistantChanged();
+    return true;
+  }
+
+  addTodo(text: string, now: number): Todo | null {
+    const clean = text.trim().slice(0, 100);
+    if (!clean || this.assistant.todos.length >= 100) return null;
+    const todo: Todo = { id: this.assistantId("t", now), text: clean, done: false, createdAt: now, doneAt: null, rewarded: false };
+    this.assistant.todos.push(todo);
+    this.assistantChanged();
+    return todo;
+  }
+
+  /** Centang/hapus centang. Mengembalikan ikan hadiah (0 bila tidak ada). */
+  toggleTodo(id: string, now: number): number {
+    const a = this.assistant;
+    const todo = a.todos.find((t) => t.id === id);
+    if (!todo) return 0;
+    todo.done = !todo.done;
+    todo.doneAt = todo.done ? now : null;
+    let reward = 0;
+    if (todo.done && !todo.rewarded) {
+      const today = dateKey(now);
+      if (a.todoRewardDate !== today) {
+        a.todoRewardDate = today;
+        a.todoRewardCount = 0;
+      }
+      todo.rewarded = true;
+      this.state.stats.todosDone += 1;
+      // Hadiah dibatasi agar daftar tugas tidak jadi ladang ikan.
+      if (a.todoRewardCount < BALANCE.todoRewardsPerDay) {
+        a.todoRewardCount += 1;
+        reward = Math.max(10, this.rate(now) * BALANCE.todoRewardSeconds);
+        this.addFish(reward);
+      }
+      this.emit({ type: "todoDone", todoId: id, reward });
+    }
+    this.assistantChanged();
+    return reward;
+  }
+
+  deleteTodo(id: string): void {
+    const a = this.assistant;
+    a.todos = a.todos.filter((t) => t.id !== id);
+    this.assistantChanged();
+  }
+
+  clearDoneTodos(): void {
+    const a = this.assistant;
+    a.todos = a.todos.filter((t) => !t.done);
+    this.assistantChanged();
+  }
+
+  startFocus(now: number, focusMinutes?: number, breakMinutes?: number): void {
+    const f = this.assistant.focus;
+    if (focusMinutes) f.focusMinutes = focusMinutes;
+    if (breakMinutes) f.breakMinutes = breakMinutes;
+    f.phase = "focus";
+    f.startedAt = now;
+    f.endsAt = now + f.focusMinutes * MIN;
+    this.assistantChanged();
+  }
+
+  stopFocus(): void {
+    const f = this.assistant.focus;
+    f.phase = "idle";
+    f.endsAt = 0;
+    this.assistantChanged();
+  }
+
+  setFocusDurations(focusMinutes: number, breakMinutes: number): void {
+    const f = this.assistant.focus;
+    f.focusMinutes = Math.min(120, Math.max(5, focusMinutes));
+    f.breakMinutes = Math.min(60, Math.max(1, breakMinutes));
+    this.assistantChanged();
+  }
+
+  setWellnessInterval(kind: WellnessKind, minutes: number, now: number): void {
+    const w = this.assistant.wellness;
+    w.intervals[kind] = Math.max(0, minutes);
+    w.next[kind] = now + Math.max(1, minutes) * MIN;
+    this.assistantChanged();
+  }
+
+  setActiveHours(from: string, to: string): void {
+    if (!parseTime(from) || !parseTime(to)) return;
+    const w = this.assistant.wellness;
+    w.from = from;
+    w.to = to;
+    this.assistantChanged();
+  }
+
+  /** Pemain mengikuti pengingat sehat (sudah minum, sudah peregangan...). */
+  ackWellness(kind: WellnessKind, now: number): number {
+    this.state.stats.wellnessDone += 1;
+    const reward = Math.max(5, this.rate(now) * BALANCE.wellnessRewardSeconds);
+    this.addFish(reward);
+    for (const cat of this.state.cats) this.addBond(cat, 1);
+    this.assistantChanged();
+    void kind;
+    return reward;
+  }
+
+  updateAssistant(patch: Partial<Pick<AssistantState, "chime" | "bedtime" | "clock" | "showOnAlert" | "nativeNotify">>): void {
+    // Jam tidur kosong/rusak (misalnya kolom jam dikosongkan) diabaikan.
+    if (typeof patch.bedtime === "string" && !parseTime(patch.bedtime)) delete patch.bedtime;
+    Object.assign(this.assistant, patch);
+    // Jam tidur diganti: boleh berbunyi lagi hari ini pada jam yang baru.
+    if (patch.bedtime !== undefined) this.assistant.lastBedtime = "";
+    this.assistantChanged();
+  }
+
+  /**
+   * Jalankan kejadian terjadwal. Kunci yang sudah basi (sudah ditangani atau
+   * jadwalnya berubah) diabaikan, jadi aman dipanggil lebih dari sekali.
+   */
+  handleDue(key: string, now: number): Alert | null {
+    const a = this.assistant;
+    const [kind, ...rest] = key.split(":");
+    let alert: Alert | null = null;
+    const make = (k: Alert["kind"], title: string, body: string, at: number, refId: string | null = null, reward = 0): Alert => ({
+      key,
+      kind: k,
+      title,
+      body,
+      refId,
+      at,
+      reward,
+      missed: now - at > 10 * MIN,
+    });
+
+    switch (kind) {
+      case "rem": {
+        const at = Number(rest[rest.length - 1]);
+        const id = rest.slice(0, -1).join(":");
+        const r = a.reminders.find((x) => x.id === id);
+        if (!r || nextReminderAt(r) !== at || at > now + 5000) return null;
+        r.lastFired = at;
+        r.snoozeUntil = null;
+        // Komputer sempat tidur: lewati semua kejadian yang sudah lewat, cukup satu pesan.
+        let latest = at;
+        for (let next = nextReminderAt(r), guard = 0; next !== null && next <= now && guard < 500; next = nextReminderAt(r), guard++) {
+          latest = next;
+          r.lastFired = next;
+        }
+        this.state.stats.remindersFired += 1;
+        alert = make("reminder", r.text, `${now - latest > 10 * MIN ? "Terlewat" : "Pengingat"} pukul ${formatClock(latest)}`, latest, r.id);
+        break;
+      }
+      case "focus": {
+        const at = Number(rest[0]);
+        const f = a.focus;
+        if (f.phase !== "focus" || f.endsAt !== at || at > now + 5000) return null;
+        if (now - at > 10 * MIN) {
+          // Sesi berakhir saat komputer tidur: tidak dihitung, timer cukup dihentikan.
+          f.phase = "idle";
+          f.endsAt = 0;
+          this.assistantChanged();
+          return null;
+        }
+        const today = dateKey(now);
+        if (f.todayDate !== today) {
+          f.todayDate = today;
+          f.todayCount = 0;
+        }
+        f.todayCount += 1;
+        this.state.stats.focusSessions += 1;
+        this.state.stats.focusMinutes += f.focusMinutes;
+        const reward = Math.max(20, this.rate(now) * BALANCE.focusRewardSeconds * (f.focusMinutes / 25));
+        this.addFish(reward);
+        for (const cat of this.state.cats) this.addBond(cat, BALANCE.bondPerFocus);
+        f.phase = "break";
+        f.startedAt = now;
+        f.endsAt = now + f.breakMinutes * MIN;
+        alert = make("focusDone", "Sesi fokus selesai!", `Kerja bagus! Istirahat ${f.breakMinutes} menit dulu.`, at, null, reward);
+        break;
+      }
+      case "break": {
+        const at = Number(rest[0]);
+        const f = a.focus;
+        if (f.phase !== "break" || f.endsAt !== at || at > now + 5000) return null;
+        f.phase = "idle";
+        f.endsAt = 0;
+        alert = make("breakDone", "Istirahat selesai", "Siap fokus lagi?", at);
+        break;
+      }
+      case "well": {
+        const k = rest[0] as WellnessKind;
+        const scheduled = Number(rest[1]);
+        const w = a.wellness;
+        if (!(k in w.intervals) || w.intervals[k] <= 0 || w.next[k] !== scheduled) return null;
+        const due = wellnessAt(w, k, scheduled);
+        w.next[k] = now + w.intervals[k] * MIN;
+        if (now - due > 10 * MIN) {
+          // Terlambat jauh (komputer tidur): jadwalkan ulang tanpa pesan.
+          this.assistantChanged();
+          return null;
+        }
+        alert = make(k, WELLNESS_TEXT[k].title, WELLNESS_TEXT[k].body, now);
+        break;
+      }
+      case "chime": {
+        const at = Number(rest[0]);
+        if (!a.chime || at > now + 5000 || at <= a.lastChime) return null;
+        a.lastChime = at;
+        if (now - at > 5 * MIN) {
+          this.assistantChanged();
+          return null;
+        }
+        alert = make("chime", `Sudah jam ${formatClock(at)}`, "", at);
+        break;
+      }
+      case "bed": {
+        const at = Number(rest[0]);
+        const date = dateKey(at);
+        if (!a.bedtime || a.lastBedtime === date || at > now + 5000) return null;
+        a.lastBedtime = date;
+        if (now - at > HOUR) {
+          this.assistantChanged();
+          return null;
+        }
+        alert = make("bedtime", "Sudah malam", "Kucing-kucing mau tidur. Kamu juga istirahat, ya.", now);
+        break;
+      }
+      default:
+        return null;
+    }
+    this.assistantChanged();
+    this.emit({ type: "alert", alert });
+    return alert;
+  }
+
+  /**
+   * Jalankan kejadian yang sudah waktunya. Di browser dipakai sebagai pengecek
+   * utama; di Tauri sebagai jaring pengaman (graceMs > 0) bila event dari Rust hilang.
+   */
+  pollDue(now: number, graceMs = 0): void {
+    for (const item of this.schedule(now)) if (item.at <= now - graceMs) this.handleDue(item.key, now);
+  }
+
+  /**
+   * Dipanggil saat aplikasi dibuka: pengingat yang terlewat selama aplikasi tertutup
+   * dicatat (dan dikembalikan untuk ditampilkan), timer yang kedaluwarsa direset.
+   */
+  catchUp(now: number): Alert[] {
+    const a = this.assistant;
+    const missed: Alert[] = [];
+    for (const r of a.reminders) {
+      let at = nextReminderAt(r);
+      let latest: number | null = null;
+      for (let guard = 0; at !== null && at < now - 2 * MIN && guard < 500; guard++) {
+        latest = at;
+        r.lastFired = at;
+        r.snoozeUntil = null;
+        at = nextReminderAt(r);
+      }
+      if (latest !== null && now - latest < 12 * HOUR) {
+        missed.push({
+          key: `missed:${r.id}:${latest}`,
+          kind: "reminder",
+          title: r.text,
+          body: `Terlewat pukul ${formatClock(latest)}`,
+          refId: r.id,
+          at: latest,
+          reward: 0,
+          missed: true,
+        });
+      }
+    }
+    const f = a.focus;
+    if (f.phase !== "idle" && f.endsAt < now - MIN) {
+      f.phase = "idle";
+      f.endsAt = 0;
+    }
+    const w = a.wellness;
+    for (const k of Object.keys(w.intervals) as WellnessKind[]) {
+      if (w.intervals[k] > 0 && w.next[k] < now) w.next[k] = now + Math.min(w.intervals[k], 10) * MIN;
+    }
+    if (a.bedtime) {
+      const today = dateKey(now);
+      const bed = atDateTime(today, a.bedtime);
+      if (bed !== null && now - bed > 30 * MIN && a.lastBedtime !== today) a.lastBedtime = today;
+    }
+    this.assistantChanged();
+    return missed;
+  }
+
+  // -------------------------------------------------------------------------
+  // Hadiah harian dan prestasi
+
+  /** Hadiah pertama setiap hari, dibawa kucing yang paling sayang padamu. */
+  checkDaily(now: number): boolean {
+    const d = this.state.daily;
+    const today = dateKey(now);
+    // Jam komputer dimundurkan: jangan beri hadiah lagi.
+    if (d.lastDate >= today || this.state.cats.length === 0) return false;
+    const yesterday = dateKey(startOfDay(now) - HOUR);
+    d.streak = d.lastDate === yesterday ? d.streak + 1 : 1;
+    d.best = Math.max(d.best, d.streak);
+    d.lastDate = today;
+    const giver = [...this.state.cats].sort((p, q) => q.bond - p.bond || p.adoptedAt - q.adoptedAt)[0];
+    let item: GiftItem;
+    if (d.streak % 7 === 0) {
+      const owned = new Set(this.state.inventory.accessories);
+      for (const g of this.state.gifts) if (g.item.kind === "accessory") owned.add(g.item.id);
+      const special = ACCESSORIES.filter((acc) => acc.price === null && !owned.has(acc.id));
+      item = special.length > 0 ? { kind: "accessory", id: special[0].id } : { kind: "treats", amount: 5 };
+    } else if (d.streak % 3 === 0) {
+      item = { kind: "treats", amount: 3 };
+    } else {
+      item = { kind: "fish", seconds: BALANCE.dailyFishSeconds * Math.min(d.streak, 10) };
+    }
+    this.dropGift(giver, now, item);
+    this.emit({ type: "daily", streak: d.streak, catId: giver.id });
+    return true;
+  }
+
+  checkAchievements(now: number): string[] {
+    const s = this.state;
+    const unlocked: string[] = [];
+    for (const def of ACHIEVEMENTS) {
+      if (s.achievements.includes(def.id)) continue;
+      const [value, target] = def.progress(s);
+      if (value < target) continue;
+      s.achievements.push(def.id);
+      unlocked.push(def.id);
+      if (def.reward.treats) s.inventory.treats += def.reward.treats;
+      if (def.reward.fishSeconds) this.addFish(Math.max(50, this.rate(now) * def.reward.fishSeconds));
+    }
+    if (unlocked.length > 0) {
+      this.emit({ type: "achievement", ids: unlocked });
+      this.emit({ type: "inventory" });
+    }
+    return unlocked;
+  }
+
+  achievementUnlocked(id: string): boolean {
+    return this.state.achievements.includes(id) && !!ACHIEVEMENT_BY_ID[id];
+  }
+
+  recordPhoto(): void {
+    this.state.stats.photos += 1;
   }
 
   // -------------------------------------------------------------------------

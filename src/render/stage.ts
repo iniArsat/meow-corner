@@ -2,7 +2,8 @@
 // langsung dengan kucing (elus, usap, angkat-lempar, mainan bulu, camilan).
 // Stage membaca GameState; perubahan state selalu lewat StageActions.
 
-import { Application, Container, Graphics, Sprite, Text, TextureSource } from "pixi.js";
+import { Application, Container, Graphics, Rectangle, Sprite, Text, TextureSource } from "pixi.js";
+import type { Alert, AlertKind } from "../core/assistant";
 import { BALANCE, FACILITIES } from "../core/data";
 import { hearts as heartCount, isHungry } from "../core/economy";
 import { formatFish } from "../core/format";
@@ -26,7 +27,10 @@ export type StageSound =
   | "crunch"
   | "coin"
   | "feed"
-  | "denied";
+  | "denied"
+  | "alarm"
+  | "chime"
+  | "shutter";
 
 export interface StageActions {
   pet(catId: string): void;
@@ -43,7 +47,25 @@ export interface StageActions {
   tip(key: string, text: string): void;
   /** Mode mainan/camilan berubah dari sisi Stage (misalnya camilan habis). */
   modesChanged(): void;
+  /** Kucing pembawa pesan diklik: anggap pesannya sudah dibaca. */
+  alertCatClicked(catId: string): void;
 }
+
+/** Ikon gelembung untuk setiap jenis pesan asisten. */
+const ALERT_ICON: Record<AlertKind, ObjectId> = {
+  reminder: "bell",
+  focusDone: "tomato",
+  breakDone: "tomato",
+  water: "water",
+  stretch: "heart",
+  eyes: "eye",
+  chime: "clock",
+  bedtime: "moon",
+};
+
+/** Lama kucing mengeong berulang bila pesan belum dibaca. */
+const ALARM_REPEAT_MS = 10_000;
+const ALARM_MAX_MS = 120_000;
 
 /** Lebar bawaan area kanan yang dipakai HUD; diperbarui dari ukuran HUD sebenarnya. */
 const DEFAULT_RESERVED = 340;
@@ -412,7 +434,8 @@ export class Stage implements ActorHost {
   }
 
   landed(actor: CatActor, hard: boolean): void {
-    if (actor.isVisitor) return;
+    // Tamu dan kucing yang sedang pamit tidak bereaksi pada pendaratan.
+    if (actor.isVisitor || this.cats.get(actor.id) !== actor) return;
     const now = Date.now();
     if (actor.spot?.kind === "box") {
       // Masuk kardus: sembunyi sebentar lalu keluar sendiri.
@@ -681,7 +704,9 @@ export class Stage implements ActorHost {
       this.gifts.set(gift.id, view);
       const giver = this.cats.get(gift.catId);
       const fresh = Date.now() - gift.createdAt < 5000;
-      if (fresh && giver && !giver.airborne && giver !== this.dragging && giver.mode !== "angry") this.deliverGift(giver, view);
+      if (fresh && giver && !giver.airborne && giver !== this.dragging && giver.mode !== "angry" && giver.task !== "alert") {
+        this.deliverGift(giver, view);
+      }
       else this.revealGift(view, false);
     }
   }
@@ -940,6 +965,13 @@ export class Stage implements ActorHost {
     a.clicks.push(now);
     if (a.mode === "angry" || a.airborne || a.hidden) return;
 
+    if (a.task === "alert") {
+      // Kucing pembawa pesan: klik berarti "sudah kubaca".
+      this.actions.alertCatClicked(a.id);
+      const head = a.headPos();
+      this.fx.hearts(head.x, head.y, 1);
+      return;
+    }
     if (this.treatMode && this.giveTreat(a)) return;
 
     if (a.mode === "sulk") {
@@ -1139,7 +1171,231 @@ export class Stage implements ActorHost {
 
   catPosition(catId: string): { x: number; y: number } | null {
     const a = catId === "visitor" ? this.visitor : this.cats.get(catId);
-    return a ? a.headPos() : null;
+    return a && !a.hidden ? a.headPos() : null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Asisten: kucing pembawa pesan
+
+  /** Kucing yang sedang membawa pesan, dengan waktu mulai dan bunyi berikutnya. */
+  private messengers = new Map<string, { key: string; kind: AlertKind; since: number; nextBeep: number }>();
+
+  private pickMessenger(): CatActor | null {
+    const list = this.residents().filter((a) => !a.removed && a !== this.dragging && a.task !== "alert");
+    if (list.length === 0) return null;
+    const bond = (a: CatActor) => this.game.cat(a.id)?.bond ?? 0;
+    // Yang paling sayang padamu, tapi jangan selalu yang sama bila ikatan setara.
+    list.sort((p, q) => bond(q) - bond(p) || Math.random() - 0.5);
+    return list[0];
+  }
+
+  /** Kucing-kucing yang sedang bebas (untuk reaksi bersama). */
+  private freeCats(): CatActor[] {
+    return this.residents().filter((a) => !a.airborne && !a.hidden && !a.task && a !== this.dragging);
+  }
+
+  /**
+   * Sampaikan pesan asisten lewat kucing: ia berlari ke tengah strip lalu
+   * melompat-lompat sampai pesannya dibaca. Mengembalikan id kucing pembawa pesan.
+   */
+  summonForAlert(alert: Alert): string | null {
+    const s = this.pixelScale;
+    const icon = ALERT_ICON[alert.kind];
+
+    if (alert.kind === "chime") {
+      const a = this.freeCats()[Math.floor(Math.random() * Math.max(1, this.freeCats().length))] ?? this.pickMessenger();
+      if (!a) return null;
+      a.emote("clock", 2.4);
+      if (a.calm) a.setMode("sit", 3);
+      this.actions.sound("chime");
+      return null;
+    }
+
+    const a = this.pickMessenger();
+    if (!a) return null;
+    a.cancelTask();
+    a.task = "alert";
+    this.messengers.set(a.id, { key: alert.key, kind: alert.kind, since: performance.now(), nextBeep: Infinity });
+    const [minX, maxX] = this.walkRange();
+    const target = clamp((minX + maxX) / 2 + rand(-50, 50) * s * 0.4, minX + 30 * s, maxX - 30 * s);
+    if (alert.kind === "water") a.setCarry("water");
+    a.emote("exclaim", 0.8, false);
+
+    const arrive = () => {
+      if (a.task !== "alert") return;
+      a.setCarry(null);
+      a.face(maxX);
+      a.emote(icon, 3);
+      if (alert.kind === "bedtime") a.setMode("yawn", 2.7, () => a.task === "alert" && a.setMode("announce"));
+      else if (alert.kind === "stretch") a.setMode("stretch", 3, () => a.task === "alert" && a.setMode("announce"));
+      else a.setMode("announce");
+      this.actions.sound(alert.kind === "reminder" || alert.kind === "focusDone" || alert.kind === "breakDone" ? "alarm" : "meow");
+      const now = performance.now();
+      this.messengers.set(a.id, { key: alert.key, kind: alert.kind, since: now, nextBeep: now + ALARM_REPEAT_MS });
+
+      // Reaksi bersama.
+      if (alert.kind === "focusDone") {
+        const head = a.headPos();
+        this.fx.confetti(head.x, head.y);
+        for (const o of this.freeCats()) o.setMode("happy", rand(1.5, 3));
+      } else if (alert.kind === "stretch") {
+        for (const o of this.freeCats()) o.setMode("stretch", rand(2, 3.5));
+      } else if (alert.kind === "bedtime") {
+        for (const o of this.freeCats()) o.setMode(Math.random() < 0.5 ? "yawn" : "sleep", Math.random() < 0.5 ? 2.7 : 60);
+      }
+    };
+    const run = () => a.walkTo(target, arrive, Math.abs(target - a.x) > 60 * s);
+    if (a.spot || a.hidden) a.jumpDown(run, target);
+    else run();
+    return a.id;
+  }
+
+  /** Pesan sudah dibaca: kucing kembali beraktivitas (hanya bila ia masih membawa pesan itu). */
+  releaseAlert(catId: string | null, key: string): void {
+    if (!catId) return;
+    const m = this.messengers.get(catId);
+    if (!m || m.key !== key) return;
+    this.messengers.delete(catId);
+    const a = this.cats.get(catId);
+    if (!a || a.task !== "alert") return;
+    a.task = null;
+    a.setCarry(null);
+    // Yang sedang di udara cukup dibiarkan mendarat; keputusan berikutnya datang sendiri.
+    if (!a.airborne) {
+      a.setMode("happy", 1.4);
+      const head = a.headPos();
+      this.fx.hearts(head.x, head.y, 2);
+    }
+  }
+
+  private updateMessengers(): void {
+    const now = performance.now();
+    for (const [id, m] of this.messengers) {
+      const a = this.cats.get(id);
+      if (!a || a.task !== "alert") {
+        this.messengers.delete(id);
+        continue;
+      }
+      if (a.mode !== "announce" || now < m.nextBeep || now - m.since > ALARM_MAX_MS) continue;
+      m.nextBeep = now + ALARM_REPEAT_MS;
+      a.emote(ALERT_ICON[m.kind], 2.5);
+      if (m.kind === "reminder") this.actions.sound("alarm");
+    }
+  }
+
+  /** Tugas selesai dan semacamnya: seekor kucing ikut senang. */
+  cheer(): void {
+    const free = this.freeCats();
+    const a = free[Math.floor(Math.random() * free.length)];
+    if (!a) return;
+    a.setMode("happy", 1.6);
+    const head = a.headPos();
+    this.fx.stars(head.x, head.y, 6);
+    this.fx.hearts(head.x, head.y, 1);
+  }
+
+  /** Kucing yang dilepas berpamitan lalu berjalan keluar layar. */
+  farewell(catId: string): void {
+    const a = this.cats.get(catId);
+    if (!a) {
+      this.sync();
+      return;
+    }
+    this.cats.delete(catId);
+    this.messengers.delete(catId);
+    if (this.dragging === a) {
+      this.dragging = null;
+      this.press = null;
+      // Dilepas dari genggaman: jatuh dulu, lalu berjalan keluar.
+      a.drop(0, 0, null);
+    }
+    a.cancelTask();
+    a.setNeed(null);
+    const head = a.headPos();
+    this.fx.hearts(head.x, head.y, 4);
+    a.emote("heart", 2.5);
+    const exit = a.x < this.width / 2 ? -100 : this.width + 100;
+    a.exitTo = exit;
+    const go = () => a.leaveTo(exit);
+    // Yang sedang jatuh dibiarkan mendarat; loop "leaving" mengirimnya keluar.
+    if (a.airborne) a.needsDecision = false;
+    else if (a.spot || a.hidden) a.jumpDown(go);
+    else a.setMode("happy", 1.2, go);
+    this.leaving.push(a);
+    this.sync();
+  }
+
+  /**
+   * Foto strip berbingkai untuk disimpan sebagai PNG: kucing, fasilitas, dan
+   * kado di atas langit siang/malam, dengan keterangan tanggal.
+   */
+  photo(caption: string): HTMLCanvasElement {
+    const s = this.pixelScale;
+    const [, maxX] = this.walkRange();
+    // Cukup tinggi untuk kucing yang bertengger di tiang garuk beserta topinya.
+    const top = Math.max(0, Math.floor(this.groundY - 54 * s));
+    const w = Math.max(200, Math.min(this.width, Math.round(maxX + 40 * s)));
+    const h = Math.ceil(this.height - top);
+    const overlays: Container[] = [this.hoverLabel, this.hoverHearts, this.toyLayer];
+    const was = overlays.map((n) => n.visible);
+    overlays.forEach((n) => (n.visible = false));
+    let shot: HTMLCanvasElement;
+    try {
+      shot = this.app.renderer.extract.canvas({
+        target: this.app.stage,
+        frame: new Rectangle(0, top, w, h),
+        resolution: 1,
+      }) as HTMLCanvasElement;
+    } finally {
+      overlays.forEach((n, i) => (n.visible = was[i]));
+    }
+
+    const pad = 14;
+    const footer = 30;
+    const out = document.createElement("canvas");
+    out.width = w + pad * 2;
+    out.height = h + pad * 2 + footer;
+    const ctx = out.getContext("2d")!;
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = "#fff8ec";
+    ctx.fillRect(0, 0, out.width, out.height);
+    const night = isNight(this.hour);
+    const sky = ctx.createLinearGradient(0, pad, 0, pad + h);
+    sky.addColorStop(0, night ? "#1d2346" : "#9cc6e4");
+    sky.addColorStop(1, night ? "#3b3f6e" : "#e3eef4");
+    ctx.fillStyle = sky;
+    ctx.fillRect(pad, pad, w, h);
+    if (night) {
+      ctx.fillStyle = "#fffbe0";
+      for (let i = 0; i < 40; i++) ctx.fillRect(pad + ((i * 9301 + 49297) % w), pad + ((i * 233 + 17) % Math.max(1, h - 60)), 2, 2);
+    } else {
+      // Awan piksel.
+      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+      for (let i = 0; i < Math.max(2, Math.floor(w / 260)); i++) {
+        const cx = pad + 40 + ((i * 7919) % Math.max(1, w - 120));
+        const cy = pad + 12 + ((i * 97) % 3) * 10;
+        const u = 2 * s;
+        ctx.fillRect(cx, cy + u, 10 * u, 2 * u);
+        ctx.fillRect(cx + 2 * u, cy, 5 * u, u);
+      }
+    }
+    // Lantai kayu tipis.
+    ctx.fillStyle = night ? "#4a3a56" : "#d9b98c";
+    ctx.fillRect(pad, pad + h - 4, w, 4);
+    ctx.drawImage(shot, pad, pad);
+    ctx.strokeStyle = "#2a1d1a";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(pad - 1.5, pad - 1.5, w + 3, h + 3);
+    ctx.fillStyle = "#2a1d1a";
+    ctx.font = "800 15px Segoe UI, system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.fillText("Meow Corner", pad, pad * 2 + h + footer / 2 - 4);
+    ctx.font = "600 13px Segoe UI, system-ui, sans-serif";
+    ctx.fillStyle = "#6b5850";
+    const label = caption;
+    ctx.fillText(label, pad + 120, pad * 2 + h + footer / 2 - 4);
+    this.fx.flash(this.width, this.height);
+    return out;
   }
 
   // -------------------------------------------------------------------------
@@ -1176,7 +1432,7 @@ export class Stage implements ActorHost {
   private feedingTime(): void {
     const bowl = this.facilities.get("mangkuk");
     for (const a of this.cats.values()) {
-      if (a.airborne || a === this.dragging) continue;
+      if (a.airborne || a === this.dragging || a.task === "alert") continue;
       const head = a.headPos();
       this.fx.hearts(head.x, head.y, 1);
       if (!bowl) continue;
@@ -1221,6 +1477,10 @@ export class Stage implements ActorHost {
         return;
       case "butterfly":
         this.butterflyStep(a);
+        return;
+      case "alert":
+        // Pembawa pesan tetap menunggu sampai pesannya dibaca.
+        a.setMode("announce");
         return;
       case null:
         break;
@@ -2165,6 +2425,7 @@ export class Stage implements ActorHost {
       actor.update(dt, now);
     }
     this.updateSocials(dt);
+    this.updateMessengers();
 
     const v = this.visitor;
     if (v) {
@@ -2176,6 +2437,8 @@ export class Stage implements ActorHost {
     }
     for (let i = this.leaving.length - 1; i >= 0; i--) {
       const actor = this.leaving[i];
+      // Kucing yang pamit: setiap kali tugasnya selesai (misalnya selesai mendarat), lanjut berjalan keluar.
+      if (actor.exitTo !== null && actor.needsDecision && actor.mode !== "leave") actor.leaveTo(actor.exitTo);
       actor.update(dt, now);
       if (actor.removed) {
         actor.destroy();

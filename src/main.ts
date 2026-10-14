@@ -11,9 +11,15 @@ import {
   hideWindow,
   isTauri,
   onQuitRequested,
+  onScheduleDue,
   onVisibilityChanged,
+  openPhotoFolder,
   quitApp,
+  savePhoto,
+  setSchedule,
+  showStrip,
 } from "./platform/desktop";
+import { pad2 } from "./core/assistant";
 import { Stage } from "./render/stage";
 import { playSound, type SoundId } from "./ui/sound";
 import { Ui } from "./ui/ui";
@@ -51,7 +57,20 @@ async function main(): Promise<void> {
     sound,
     tip: (key, text) => ui.tip(key, text),
     modesChanged: () => ui.refreshModes(),
+    alertCatClicked: (catId) => ui.assistant.dismissForCat(catId),
   });
+
+  /** Foto strip berbingkai, disimpan ke folder Gambar/Meow Corner. */
+  async function takePhoto(): Promise<string | null> {
+    const d = new Date();
+    const date = d.toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+    const canvas = stage.photo(`${date} · ${game.state.cats.length} kucing`);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("gambar tidak bisa dibuat");
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const stamp = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+    return savePhoto(`meow-${stamp}`, bytes);
+  }
 
   ui = new Ui(document.getElementById("ui")!, game, {
     sound,
@@ -69,32 +88,73 @@ async function main(): Promise<void> {
       await quitApp();
     },
     resetProgress: async () => {
+      // Pengingat dan daftar tugas bukan progres game; tetap disimpan.
+      const assistant = game.state.assistant;
       game.state = createInitialState(Date.now());
+      game.state.assistant = assistant;
       await saver.saveNow();
       window.location.reload();
     },
     canHide: isTauri,
+    catPosition: (catId) => stage.catPosition(catId),
+    alertDone: (catId, key) => stage.releaseAlert(catId, key),
+    takePhoto,
+    openPhotoFolder,
+    canOpenFolder: isTauri,
   });
+
+  // Jadwal asisten dikirim ke sisi Rust setiap kali berubah (dan berkala, untuk bunyi jam).
+  let scheduleTimer = 0;
+  const pushSchedule = () => {
+    window.clearTimeout(scheduleTimer);
+    scheduleTimer = window.setTimeout(() => void setSchedule(game.schedule(Date.now())).catch(() => undefined), 50);
+  };
+  const applyQuiet = () =>
+    stage.setFocusMode(game.state.settings.focusMode || game.state.assistant.focus.phase === "focus");
 
   game.on((e) => {
     if (e.type === "adopted") stage.adoptVisitorAt(e.cat.id);
+    else if (e.type === "released") stage.farewell(e.cat.id);
     else if (e.type === "settings") {
       stage.setPixelScale(game.state.settings.scale);
-      stage.setFocusMode(game.state.settings.focusMode);
+      applyQuiet();
     } else stage.sync();
     stage.onGameEvent(e);
     ui.onGameEvent(e);
+    if (e.type === "assistant") {
+      pushSchedule();
+      applyQuiet();
+      ui.refreshHud(Date.now());
+    } else if (e.type === "alert") {
+      const catId = stage.summonForAlert(e.alert);
+      ui.showAlert(e.alert, catId);
+      const important = e.alert.kind === "reminder" || e.alert.kind === "focusDone" || e.alert.kind === "breakDone";
+      if (important && !game.visible && game.state.assistant.showOnAlert) void showStrip();
+    } else if (e.type === "todoDone") stage.cheer();
   });
 
   // Tick pertama menghitung progres selama game ditutup (event "offline").
   game.tick(Date.now());
   stage.sync();
+  // Dengarkan jadwal dari Rust sebelum jadwal pertama dikirim, agar tidak ada yang hilang.
+  await onScheduleDue((key) => game.handleDue(key, Date.now()));
+  // Pengingat yang terlewat selama aplikasi tertutup.
+  const missed = game.catchUp(Date.now());
+  window.setTimeout(() => {
+    for (const m of missed.slice(-3)) ui.toast(`Terlewat: “${m.title}” (${m.body.replace("Terlewat pukul ", "")})`, 9000);
+  }, 1500);
+  applyQuiet();
+  pushSchedule();
+  window.setInterval(pushSchedule, 60_000);
   // Tamu yang sudah siap diadopsi sebelum game ditutup masih menunggu jawaban.
   if (game.state.visitor && game.state.visitor.fed >= 3) ui.showAdoptDialog();
 
   window.setInterval(() => {
     const now = Date.now();
     game.tick(now);
+    // Di browser tidak ada pengecek jadwal Rust; periksa di sini. Di Tauri, jaring
+    // pengaman untuk event yang hilang (Rust biasanya berbunyi dalam 1 detik).
+    game.pollDue(now, isTauri ? 4000 : 0);
     ui.refreshHud(now);
     stage.reservedRight = ui.hudReservedWidth();
   }, 250);
@@ -115,6 +175,13 @@ async function main(): Promise<void> {
   window.setTimeout(() => {
     ui.tip("intro-drag", "Kucing bisa diangkat: seret dengan mouse, lalu jatuhkan di atas fasilitas untuk menugaskannya.", 9000);
   }, fresh ? 120_000 : 90_000);
+  window.setTimeout(() => {
+    ui.tip(
+      "intro-assistant",
+      "Baru: tombol lonceng di panel bawah. Atur pengingat (misalnya meeting jam 5), timer fokus, dan daftar tugas. Kucing yang akan mengingatkanmu!",
+      10_000,
+    );
+  }, fresh ? 160_000 : 12_000);
 
   const clickThrough = new ClickThroughController(
     (x, y) => htmlHitTest(x, y) || stage.hitTest(x, y),

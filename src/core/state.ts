@@ -1,5 +1,7 @@
 // Pembuatan state awal dan migrasi data simpanan.
 
+import { ACHIEVEMENT_BY_ID } from "./achievements";
+import { defaultAssistant, migrateAssistant } from "./assistant";
 import { ACCESSORY_BY_ID, BALANCE, COAT_BY_ID, TRAIT_IDS, UPGRADE_BY_ID } from "./data";
 import type {
   CatState,
@@ -15,8 +17,8 @@ import type {
 } from "./types";
 import { FACILITY_IDS } from "./types";
 
-/** v1: rilis pertama. v2: ikatan, aksesori, camilan, hadiah. */
-export const SAVE_VERSION = 2;
+/** v1: rilis pertama. v2: ikatan, aksesori, camilan, hadiah. v3: asisten, prestasi, hadiah harian. */
+export const SAVE_VERSION = 3;
 
 const MINUTE = 60_000;
 
@@ -39,6 +41,13 @@ function defaultStats(now: number): Stats {
     toyCatches: 0,
     giftsReceived: 0,
     purrs: 0,
+    catsReleased: 0,
+    remindersFired: 0,
+    focusSessions: 0,
+    focusMinutes: 0,
+    todosDone: 0,
+    wellnessDone: 0,
+    photos: 0,
   };
 }
 
@@ -78,6 +87,9 @@ export function createInitialState(now: number): GameState {
     giftCounter: 0,
     settings: defaultSettings(),
     stats: defaultStats(now),
+    assistant: defaultAssistant(now),
+    achievements: [],
+    daily: { lastDate: "", streak: 0, best: 0 },
   };
 }
 
@@ -173,7 +185,8 @@ function migrateGifts(raw: unknown, now: number): GiftState[] {
       createdAt: num(g.createdAt, now, 0),
     });
   }
-  return gifts.slice(0, BALANCE.maxGiftsOnStrip);
+  // Hadiah harian boleh melebihi batas kado acak; jangan sampai hilang saat dimuat.
+  return gifts.slice(0, BALANCE.maxGiftsOnStrip + 7);
 }
 
 function migrateInventory(raw: unknown): Inventory {
@@ -229,6 +242,20 @@ export function migrateState(raw: unknown, now: number): GameState | null {
     stats.toyCatches = num(rs.toyCatches, 0, 0);
     stats.giftsReceived = num(rs.giftsReceived, 0, 0);
     stats.purrs = num(rs.purrs, 0, 0);
+    stats.catsReleased = num(rs.catsReleased, 0, 0);
+    stats.remindersFired = num(rs.remindersFired, 0, 0);
+    stats.focusSessions = num(rs.focusSessions, 0, 0);
+    stats.focusMinutes = num(rs.focusMinutes, 0, 0);
+    stats.todosDone = num(rs.todosDone, 0, 0);
+    stats.wellnessDone = num(rs.wellnessDone, 0, 0);
+    stats.photos = num(rs.photos, 0, 0);
+  }
+
+  const daily = { lastDate: "", streak: 0, best: 0 };
+  if (isRecord(raw.daily)) {
+    daily.lastDate = /^\d{4}-\d{2}-\d{2}$/.test(str(raw.daily.lastDate, "")) ? (raw.daily.lastDate as string) : "";
+    daily.streak = Math.floor(num(raw.daily.streak, 0, 0));
+    daily.best = Math.max(daily.streak, Math.floor(num(raw.daily.best, 0, 0)));
   }
 
   const discovered = Array.isArray(raw.discovered)
@@ -265,5 +292,10 @@ export function migrateState(raw: unknown, now: number): GameState | null {
     giftCounter: Math.floor(num(raw.giftCounter, 0, 0)),
     settings,
     stats,
+    assistant: migrateAssistant(raw.assistant, now),
+    achievements: Array.isArray(raw.achievements)
+      ? [...new Set(raw.achievements.filter((a): a is string => typeof a === "string" && !!ACHIEVEMENT_BY_ID[a]))]
+      : [],
+    daily,
   };
 }

@@ -414,4 +414,14 @@ export const BALANCE = {
   giftChancePerMinute: 1 / 25,
   maxGiftsOnStrip: 3,
   giftFishSeconds: 120,
+
+  // --- Asisten (v3) ---
+  /** Hadiah sesi fokus 25 menit = produksi selama sekian detik (berskala dengan lama sesi). */
+  focusRewardSeconds: 120,
+  bondPerFocus: 3,
+  todoRewardSeconds: 30,
+  todoRewardsPerDay: 20,
+  wellnessRewardSeconds: 20,
+  /** Hadiah harian ikan = produksi selama sekian detik × hari berturut-turut (maks 10). */
+  dailyFishSeconds: 60,
 } as const;

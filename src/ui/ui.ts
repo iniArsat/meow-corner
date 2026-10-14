@@ -1,5 +1,7 @@
 // Antarmuka HTML di atas kanvas: HUD, panel bertab, dialog adopsi, dan notifikasi.
 
+import { ACHIEVEMENTS, ACHIEVEMENT_BY_ID, describeReward } from "../core/achievements";
+import { formatClock, type Alert } from "../core/assistant";
 import { ACCESSORIES, ACCESSORY_BY_ID, BALANCE, COATS, COAT_BY_ID, FACILITIES, RARITY_LABEL, TRAITS } from "../core/data";
 import {
   catContribution,
@@ -16,6 +18,7 @@ import type { Game, GameEvent } from "../core/game";
 import type { CatState, FacilityId } from "../core/types";
 import { FACILITY_IDS } from "../core/types";
 import { catImageUrl, objectImageUrl, silhouetteUrl } from "../render/textures";
+import { AssistantUi } from "./assistantUi";
 import { clear, h } from "./dom";
 import type { SoundId } from "./sound";
 
@@ -31,12 +34,13 @@ const SHORT_NAME: Record<FacilityId, string> = {
 
 const TIPS_KEY = "meow-corner.tips";
 
-export type TabId = "toko" | "kucing" | "koleksi" | "rumah" | "atur";
+export type TabId = "toko" | "kucing" | "asisten" | "koleksi" | "rumah" | "atur";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "toko", label: "Toko" },
   { id: "kucing", label: "Kucing" },
-  { id: "koleksi", label: "Kucingpedia" },
+  { id: "asisten", label: "Asisten" },
+  { id: "koleksi", label: "Koleksi" },
   { id: "rumah", label: "Rumah" },
   { id: "atur", label: "Atur" },
 ];
@@ -59,6 +63,14 @@ export interface UiDeps {
   quit(): Promise<void>;
   resetProgress(): Promise<void>;
   canHide: boolean;
+  /** Posisi kepala kucing di layar (untuk kartu pesan). */
+  catPosition(catId: string): { x: number; y: number } | null;
+  /** Pesan asisten sudah dibaca: lepaskan kucing pembawa pesan. */
+  alertDone(catId: string | null, key: string): void;
+  /** Ambil foto strip; mengembalikan path file (null di browser). */
+  takePhoto(): Promise<string | null>;
+  openPhotoFolder(): Promise<void>;
+  canOpenFolder: boolean;
 }
 
 export class Ui {
@@ -70,6 +82,9 @@ export class Ui {
   private toyBtn: HTMLButtonElement;
   private treatBtn: HTMLButtonElement;
   private treatCount: HTMLElement;
+  private focusChip: HTMLButtonElement;
+  private focusText: HTMLElement;
+  readonly assistant: AssistantUi;
   private panel: HTMLElement | null = null;
   private panelBody: HTMLElement | null = null;
   private tab: TabId = "toko";
@@ -103,6 +118,14 @@ export class Ui {
       h("img", { class: "px", src: objectImageUrl("treat", 2), alt: "Camilan" }),
       this.treatCount,
     );
+    this.focusText = h("span", { class: "mode-count" }, "");
+    this.focusChip = h(
+      "button",
+      { class: "btn btn-mode focus-chip", title: "Timer fokus", onclick: () => this.openPanel("asisten") },
+      h("img", { class: "px", src: objectImageUrl("tomato", 2), alt: "" }),
+      this.focusText,
+    );
+    this.focusChip.style.display = "none";
     this.hud = h(
       "div",
       { class: "card hud", "data-hit": true },
@@ -113,14 +136,28 @@ export class Ui {
         h("div", { class: "hud-numbers" }, this.fishEl, this.rateEl),
       ),
       this.feedBtn,
+      this.focusChip,
       this.toyBtn,
       this.treatBtn,
+      h(
+        "button",
+        { class: "btn btn-icon btn-mode", title: "Asisten: pengingat, fokus, tugas", onclick: () => this.togglePanel("asisten") },
+        h("img", { class: "px", src: objectImageUrl("bell", 2), alt: "Asisten" }),
+      ),
       this.shopBtn,
       h("button", { class: "btn", onclick: () => this.togglePanel("kucing") }, "Kucing"),
       h("button", { class: "btn btn-icon", title: "Menu lain", onclick: () => this.togglePanel("koleksi") }, "⋯"),
     );
     this.toasts = h("div", { class: "toasts" });
     root.append(this.toasts, this.hud);
+    this.assistant = new AssistantUi(root, game, {
+      toast: (m, ms) => this.toast(m, ms),
+      sound: (id) => deps.sound(id),
+      rerender: () => this.renderPanel(),
+      rerenderIfIdle: () => this.refreshPanelIfIdle(),
+      catPosition: (id) => deps.catPosition(id),
+      alertDone: (id, key) => deps.alertDone(id, key),
+    });
 
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
@@ -153,7 +190,15 @@ export class Ui {
     const s = this.game.state;
     this.fishEl.textContent = formatFish(s.fish);
     const rate = this.game.rate(now);
-    this.rateEl.textContent = spiritActive(s, now) ? `${formatRate(rate)} ✦` : formatRate(rate);
+    const clock = s.assistant.clock ? ` · ${formatClock(now)}` : "";
+    this.rateEl.textContent = `${formatRate(rate)}${spiritActive(s, now) ? " ✦" : ""}${clock}`;
+    const chip = this.assistant.focusChip(now);
+    this.focusChip.style.display = chip ? "" : "none";
+    if (chip) {
+      this.focusText.textContent = chip.text;
+      this.focusChip.classList.toggle("break", chip.phase === "break");
+      this.focusChip.title = chip.phase === "focus" ? "Sedang fokus" : "Istirahat";
+    }
     this.rateEl.title = spiritActive(s, now) ? "Bonus semangat aktif" : "";
 
     const needs = this.game.needsFood();
@@ -297,10 +342,39 @@ export class Ui {
       case "inventory":
         this.refreshModes();
         break;
+      case "released":
+        this.toast(`${e.cat.name} pamit dan pergi menjelajah dunia. Selamat jalan, ${e.cat.name}!`, 6000);
+        break;
+      case "achievement": {
+        this.deps.sound("achievement");
+        if (e.ids.length === 1) {
+          const def = ACHIEVEMENT_BY_ID[e.ids[0]];
+          this.toast(`🏆 Prestasi baru: “${def.name}”. Hadiah: ${describeReward(def.reward)}.`, 6000);
+        } else {
+          this.toast(`🏆 ${e.ids.length} prestasi baru terbuka! Lihat di tab Koleksi.`, 6000);
+        }
+        break;
+      }
+      case "daily": {
+        const cat = this.game.cat(e.catId);
+        const who = cat?.name ?? "Kucingmu";
+        this.toast(
+          e.streak > 1
+            ? `Hari ke-${e.streak} berturut-turut! ${who} membawakan hadiah harian. Klik kadonya.`
+            : `${who} membawakan hadiah harian. Klik kadonya di lantai!`,
+          7000,
+        );
+        break;
+      }
       default:
         break;
     }
     if (this.panelIdle()) this.renderPanel();
+  }
+
+  /** Pesan asisten tiba: tampilkan kartu di atas kucing pembawa pesan. */
+  showAlert(alert: Alert, catId: string | null): void {
+    this.assistant.showAlert(alert, catId);
   }
 
   private renderPanel(): void {
@@ -323,6 +397,9 @@ export class Ui {
         break;
       case "kucing":
         this.renderCats(this.panelBody, now);
+        break;
+      case "asisten":
+        this.assistant.renderTab(this.panelBody, now);
         break;
       case "koleksi":
         this.renderCollection(this.panelBody);
@@ -648,6 +725,7 @@ export class Ui {
               },
               "Panggil",
             ),
+            this.renderRelease(cat),
           ),
         ),
       );
@@ -658,6 +736,31 @@ export class Ui {
         { class: "desc help" },
         "Klik = elus · gerakkan kursor bolak-balik di atas kucing = usap sampai mendengkur · seret = angkat (jatuhkan di fasilitas untuk menugaskan). Jangan diklik terus-terusan, nanti ngambek!",
       ),
+    );
+  }
+
+  /** Tombol lepaskan dengan konfirmasi dua klik; kucing terakhir tidak bisa dilepas. */
+  private renderRelease(cat: CatState): HTMLElement {
+    const key = `release:${cat.id}`;
+    const confirm = this.confirming(key);
+    const last = this.game.state.cats.length <= 1;
+    return h(
+      "button",
+      {
+        class: `btn small subtle-btn${confirm ? " btn-danger" : ""}`,
+        disabled: last,
+        title: last ? "Kucing terakhir tidak bisa dilepas" : "Lepaskan kucing ini ke dunia luar",
+        onclick: () => {
+          if (!this.confirming(key)) {
+            this.confirmUntil.set(key, Date.now() + 4000);
+            this.renderPanel();
+            return;
+          }
+          this.confirmUntil.delete(key);
+          if (this.game.releaseCat(cat.id)) this.deps.sound("meow");
+        },
+      },
+      confirm ? "Yakin lepas?" : "Lepaskan",
     );
   }
 
@@ -766,11 +869,50 @@ export class Ui {
   // -------------------------------------------------------------------------
   // Tab Kucingpedia
 
+  private photoBusy = false;
+
+  private async takePhoto(): Promise<void> {
+    if (this.photoBusy) return;
+    this.photoBusy = true;
+    try {
+      this.deps.sound("shutter");
+      const path = await this.deps.takePhoto();
+      this.game.recordPhoto();
+      if (path) {
+        this.toast(
+          `Foto tersimpan di folder Gambar › Meow Corner.`,
+          7000,
+          false,
+          this.deps.canOpenFolder ? { label: "Buka folder", run: () => void this.deps.openPhotoFolder() } : undefined,
+        );
+      } else this.toast("Foto diunduh.");
+    } catch (err) {
+      this.toast(`Foto gagal disimpan: ${String(err)}`);
+    } finally {
+      this.photoBusy = false;
+    }
+  }
+
   private renderCollection(body: HTMLElement): void {
     const s = this.game.state;
     const owned = new Set(s.cats.map((c) => c.coat));
     body.append(
-      h("p", { class: "lead" }, `${owned.size} dari ${COATS.length} jenis kucing sudah tinggal bersamamu. Fasilitas yang lebih mahal menarik kucing yang lebih langka.`),
+      h(
+        "div",
+        { class: "photo-row" },
+        h(
+          "div",
+          { class: "info" },
+          h("div", { class: "name" }, "Foto kucing-kucingmu"),
+          h("div", { class: "desc" }, `Simpan pemandangan strip sekarang sebagai gambar PNG berbingkai. ${s.stats.photos} foto sejauh ini.`),
+        ),
+        h("button", { class: "btn btn-primary", onclick: () => void this.takePhoto() }, "Ambil foto"),
+      ),
+    );
+    this.renderAchievements(body);
+    body.append(
+      h("h3", null, `Kucingpedia · ${owned.size} dari ${COATS.length}`),
+      h("p", { class: "lead" }, "Fasilitas yang lebih mahal menarik kucing yang lebih langka untuk mampir."),
     );
     const grid = h("div", { class: "dex" });
     for (const coat of COATS) {
@@ -809,6 +951,45 @@ export class Ui {
       );
     }
     body.append(accGrid);
+  }
+
+  private renderAchievements(body: HTMLElement): void {
+    const s = this.game.state;
+    const done = new Set(s.achievements);
+    body.append(h("h3", null, `Prestasi · ${done.size} dari ${ACHIEVEMENTS.length}`));
+    const list = h("div", { class: "achievements" });
+    // Yang hampir tercapai ditampilkan lebih dulu; yang sudah selesai di akhir.
+    const items = ACHIEVEMENTS.filter((a) => !a.secret || done.has(a.id))
+      .map((a) => {
+        const [v, t] = a.progress(s);
+        return { a, v, t, unlocked: done.has(a.id) };
+      })
+      .sort((p, q) => Number(p.unlocked) - Number(q.unlocked) || q.v / q.t - p.v / p.t);
+    for (const { a, v, t, unlocked } of items) {
+      list.append(
+        h(
+          "div",
+          { class: `ach${unlocked ? " unlocked" : ""}` },
+          h("img", { class: "px ach-icon", src: objectImageUrl(unlocked ? "trophy" : "star", 2), alt: "" }),
+          h(
+            "div",
+            { class: "info" },
+            h("div", { class: "name" }, a.name),
+            h("div", { class: "desc" }, `${a.description} Hadiah: ${describeReward(a.reward)}.`),
+            unlocked
+              ? null
+              : h(
+                  "div",
+                  { class: "meter-row" },
+                  h("div", { class: "meter thin" }, h("i", { style: { width: `${Math.round((v / t) * 100)}%` } })),
+                  h("span", { class: "ach-count" }, t >= 1000 ? `${Math.round((v / t) * 100)}%` : `${Math.floor(v)}/${t}`),
+                ),
+          ),
+          unlocked ? h("span", { class: "ach-check" }, "✓") : null,
+        ),
+      );
+    }
+    body.append(list);
   }
 
   // -------------------------------------------------------------------------
@@ -911,6 +1092,8 @@ export class Ui {
         h("li", null, `Ikan berkilau ditangkap: ${stats.sparklesCaught}`),
         h("li", null, `Dengkuran: ${stats.purrs} · Camilan diberikan: ${stats.treatsGiven}`),
         h("li", null, `Bulu ditangkap: ${stats.toyCatches} · Hadiah diterima: ${stats.giftsReceived}`),
+        h("li", null, `Sesi fokus: ${stats.focusSessions} · Tugas selesai: ${stats.todosDone} · Pengingat: ${stats.remindersFired}`),
+        h("li", null, `Hadiah harian: ${g.state.daily.streak} hari berturut-turut (rekor ${g.state.daily.best})`),
         h("li", null, `Batas progres offline: ${offlineCapHours(g.state)} jam`),
       ),
       h("h3", null, "Aplikasi"),
@@ -1031,8 +1214,25 @@ export class Ui {
   // -------------------------------------------------------------------------
   // Notifikasi
 
-  toast(message: string, ms = 4000, isTip = false): void {
-    const el = h("div", { class: `card toast${isTip ? " tip" : ""}` }, message);
+  toast(message: string, ms = 4000, isTip = false, action?: { label: string; run: () => void }): void {
+    const el = h(
+      "div",
+      { class: `card toast${isTip ? " tip" : ""}`, "data-hit": action ? true : undefined },
+      message,
+      action
+        ? h(
+            "button",
+            {
+              class: "btn small toast-action",
+              onclick: () => {
+                action.run();
+                el.remove();
+              },
+            },
+            action.label,
+          )
+        : null,
+    );
     this.toasts.append(el);
     // Tips hanya tampil sekali, jadi notifikasi biasa yang dibuang lebih dulu bila penuh.
     while (this.toasts.children.length > 3) {
