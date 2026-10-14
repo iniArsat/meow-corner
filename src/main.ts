@@ -21,7 +21,7 @@ import {
 } from "./platform/desktop";
 import { pad2 } from "./core/assistant";
 import { Stage } from "./render/stage";
-import { playSound, type SoundId } from "./ui/sound";
+import { configureSound, playSound, setMusic, setMusicPaused, unlockAudio, type SoundId } from "./ui/sound";
 import { Ui } from "./ui/ui";
 
 async function main(): Promise<void> {
@@ -29,7 +29,15 @@ async function main(): Promise<void> {
   const { state, fresh } = await loadState(backend, Date.now());
   const game = new Game(state);
   const saver = new AutoSaver(backend, () => game.state);
-  const sound = (id: SoundId) => playSound(id, game.state.settings.sound);
+  const sound = (id: SoundId) => playSound(id);
+  const applySound = () => {
+    const st = game.state.settings;
+    configureSound(st.sound, st.volume);
+    setMusic(st.music);
+  };
+  applySound();
+  // Browser biasa baru mengizinkan suara setelah interaksi pertama.
+  window.addEventListener("pointerdown", () => unlockAudio(), { capture: true, once: true });
 
   // Mode browser: beri tanda agar CSS bisa menampilkan latar contoh.
   if (!isTauri) document.body.classList.add("browser");
@@ -74,6 +82,7 @@ async function main(): Promise<void> {
 
   ui = new Ui(document.getElementById("ui")!, game, {
     sound,
+    previewVolume: (v) => configureSound(game.state.settings.sound, v),
     interactions: {
       toyMode: () => stage.toyMode,
       setToyMode: (on) => stage.setToyMode(on),
@@ -118,6 +127,7 @@ async function main(): Promise<void> {
     else if (e.type === "settings") {
       stage.setPixelScale(game.state.settings.scale);
       applyQuiet();
+      applySound();
     } else stage.sync();
     stage.onGameEvent(e);
     ui.onGameEvent(e);
@@ -195,6 +205,7 @@ async function main(): Promise<void> {
     if (visible) clickThrough.reset();
     else stage.cancelPress();
     stage.setPaused(!visible);
+    setMusicPaused(!visible);
     if (!visible) void saver.saveNow();
   });
   await onQuitRequested(async () => {

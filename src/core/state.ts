@@ -17,8 +17,11 @@ import type {
 } from "./types";
 import { FACILITY_IDS } from "./types";
 
-/** v1: rilis pertama. v2: ikatan, aksesori, camilan, hadiah. v3: asisten, prestasi, hadiah harian. */
-export const SAVE_VERSION = 3;
+/**
+ * v1: rilis pertama. v2: ikatan, aksesori, camilan, hadiah. v3: asisten, prestasi,
+ * hadiah harian. v4: suara menyala bawaan, volume, musik, ukuran panel bawah.
+ */
+export const SAVE_VERSION = 4;
 
 const MINUTE = 60_000;
 
@@ -27,7 +30,16 @@ export function emptyFacilities(): Record<FacilityId, number> {
 }
 
 export function defaultSettings(): Settings {
-  return { scale: 3, sound: false, focusMode: false };
+  return {
+    scale: 3,
+    sound: true,
+    volume: 0.7,
+    music: false,
+    focusMode: false,
+    hudSize: "full",
+    hudCollapsed: false,
+    hudOpacity: 1,
+  };
 }
 
 function defaultStats(now: number): Stats {
@@ -225,9 +237,18 @@ export function migrateState(raw: unknown, now: number): GameState | null {
 
   const settings = defaultSettings();
   if (isRecord(raw.settings)) {
-    settings.scale = raw.settings.scale === 2 ? 2 : 3;
-    settings.sound = raw.settings.sound === true;
-    settings.focusMode = raw.settings.focusMode === true;
+    const rs = raw.settings;
+    settings.scale = rs.scale === 2 ? 2 : 3;
+    // Sebelum v4 suara mati secara bawaan dan banyak pemain tidak tahu ada suara;
+    // nyalakan sekali saat pindah ke v4. Setelah itu pilihan pemain dihormati.
+    const before4 = num(raw.version, 1) < 4;
+    settings.sound = before4 ? true : rs.sound !== false;
+    settings.volume = num(rs.volume, 0.7, 0) > 1 ? 1 : num(rs.volume, 0.7, 0);
+    settings.music = rs.music === true;
+    settings.focusMode = rs.focusMode === true;
+    settings.hudSize = rs.hudSize === "compact" ? "compact" : "full";
+    settings.hudCollapsed = rs.hudCollapsed === true;
+    settings.hudOpacity = Math.min(1, num(rs.hudOpacity, 1, 0.3));
   }
 
   const stats = defaultStats(now);

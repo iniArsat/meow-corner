@@ -859,6 +859,26 @@ export const OBJECTS = {
     colors: { Y: "#ffe08a" },
     outline: "#5a4a10",
   },
+  bag: {
+    grid: ["..KKK..", ".K...K.", "BBBBBBB", "BbBBBBB", "BbBBBBB", "BBBBBBB"],
+    colors: { B: "#e8913a", b: "#ffd9a8", K: "#8a5a1c" },
+    outline: "#5a3010",
+  },
+  paw: {
+    grid: ["..P.P..", "P.P.P.P", "P.....P", "..PPP..", ".PPPPP.", ".PPPPP.", "..PPP.."],
+    colors: { P: "#ef7f9b" },
+    outline: "#5a1f33",
+  },
+  speaker: {
+    grid: ["...K...", "..KK.W.", "KKKK..W", "KKKK..W", "..KK.W.", "...K..."],
+    colors: { K: "#5a4a42", W: "#4aa3df" },
+    outline: "#2a1d1a",
+  },
+  speakerOff: {
+    grid: ["...K....", "..KK.R.R", "KKKK..R.", "KKKK.R.R", "..KK....", "...K...."],
+    colors: { K: "#5a4a42", R: "#e2443e" },
+    outline: "#2a1d1a",
+  },
   butterfly: {
     grid: ["YY.k.YY", "YYYkYYY", "yYYkYYy", ".YYkYY.", ".yY.Yy."],
     colors: { Y: "#f4a340", y: "#fff1c9", k: "#2a1d1a" },

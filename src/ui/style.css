@@ -1084,3 +1084,119 @@ body.browser {
     animation: none;
   }
 }
+
+/* v4: panel bawah ringkas/mini dan transparansi --------------------------- */
+
+.hud {
+  opacity: var(--hud-opacity, 1);
+  transition: opacity 0.2s ease;
+}
+
+.hud:hover,
+.hud:focus-within {
+  opacity: 1;
+}
+
+.btn-text,
+.btn-feed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hud .ico {
+  display: none;
+  height: 16px;
+  width: auto;
+}
+
+.hud.size-compact {
+  gap: 4px;
+  padding: 4px 5px 4px 7px;
+}
+
+.hud.size-compact .ico {
+  display: inline-block;
+}
+
+.hud.size-compact .lbl,
+.hud.size-compact .hud-rate {
+  display: none;
+}
+
+.hud.size-compact .btn {
+  padding: 3px 6px;
+  min-height: 28px;
+}
+
+.hud.size-compact .hud-counter {
+  min-width: 0;
+  gap: 4px;
+}
+
+.hud.size-compact .hud-fish {
+  font-size: 14px;
+}
+
+.hud-expand {
+  display: none;
+}
+
+.hud-collapse,
+.hud-expand {
+  font-size: 16px;
+  line-height: 1;
+  padding: 3px 7px;
+}
+
+/* Mini: pil kecil berisi jumlah ikan (dan timer fokus bila aktif). */
+.hud.collapsed {
+  gap: 4px;
+  padding: 3px 4px 3px 8px;
+  border-radius: 999px;
+}
+
+.hud.collapsed > :not(.hud-counter):not(.hud-expand):not(.focus-chip) {
+  display: none;
+}
+
+.hud.collapsed > .hud-expand {
+  display: inline-block;
+  border-radius: 999px;
+}
+
+.hud.collapsed .hud-counter {
+  min-width: 0;
+  cursor: pointer;
+  position: relative;
+}
+
+.hud.collapsed .hud-rate {
+  display: none;
+}
+
+.hud.collapsed .hud-fish {
+  font-size: 14px;
+}
+
+.hud.collapsed .focus-chip {
+  padding: 2px 6px;
+  min-height: 24px;
+}
+
+.hud.collapsed.needs-food .hud-counter::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  left: 14px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  border: 2px solid var(--paper);
+}
+
+.slider {
+  width: 140px;
+  accent-color: var(--accent);
+}

@@ -8,6 +8,13 @@ Game idle kucing yang tinggal di strip bawah layar desktop. Kucing-kucing berjal
 
 Buka halaman **[Releases](https://github.com/iniArsat/meow-corner/releases/latest)**, unduh file yang berakhiran `-setup.exe`, lalu klik dua kali untuk memasang. Installer dibuat otomatis oleh GitHub Actions setiap ada perubahan di branch `main`.
 
+## Baru di versi 0.4: suara dan panel yang bisa dikecilkan
+
+- **Suara menyala secara bawaan.** Eongan kini disintesis dengan formant vokal "mi-a-u", ditambah dengkur, desis, dan bunyi pengingat. Ada pengatur volume, tombol bisu di panel bawah, dan **musik latar kotak musik** yang bisa dinyalakan (⋯ → Atur → Suara).
+- Bunyi pengingat tetap keluar walau aplikasi belum diklik sejak dibuka.
+- **Panel kanan bawah bisa dikecilkan**: mode **Ringkas** (ikon saja), atau **Mini** lewat tombol ‹ (pil kecil berisi jumlah ikan; klik untuk membuka lagi). Titik merah di pil menandakan kucing lapar.
+- **Kepekatan panel** bisa diturunkan sampai 30%. Panel kembali pekat saat kursor berada di atasnya.
+
 ## Baru di versi 0.3: Asisten Kucing
 
 **Pengingat yang diantar kucing.** Atur pesan dan jamnya, misalnya "Meeting tim" pukul 17.00, untuk sekali, setiap hari, atau Senin–Jumat. Saat waktunya tiba, kucing yang paling sayang padamu berlari ke tengah layar membawa papan pesan, melompat-lompat, dan mengeong sampai kamu menekan **Oke** (atau mengeklik kucingnya). Bisa ditunda 5 atau 15 menit.

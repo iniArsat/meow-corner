@@ -148,10 +148,22 @@ export interface SparkleState {
   expiresAt: number;
 }
 
+export type HudSize = "full" | "compact";
+
 export interface Settings {
   scale: 2 | 3;
   sound: boolean;
+  /** Volume efek suara dan musik, 0..1. */
+  volume: number;
+  /** Musik latar kotak musik. */
+  music: boolean;
   focusMode: boolean;
+  /** Panel bawah: lengkap (dengan tulisan) atau ringkas (ikon saja). */
+  hudSize: HudSize;
+  /** Panel bawah diciutkan menjadi pil kecil. */
+  hudCollapsed: boolean;
+  /** Kepekatan panel bawah saat tidak disorot, 0,3..1. */
+  hudOpacity: number;
 }
 
 export interface Stats {

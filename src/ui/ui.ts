@@ -17,6 +17,7 @@ import { formatDuration, formatFish, formatPercent, formatRate } from "../core/f
 import type { Game, GameEvent } from "../core/game";
 import type { CatState, FacilityId } from "../core/types";
 import { FACILITY_IDS } from "../core/types";
+import type { ObjectId } from "../render/pixelart";
 import { catImageUrl, objectImageUrl, silhouetteUrl } from "../render/textures";
 import { AssistantUi } from "./assistantUi";
 import { clear, h } from "./dom";
@@ -56,6 +57,8 @@ export interface Interactions {
 
 export interface UiDeps {
   sound(id: SoundId): void;
+  /** Dengar volume baru sambil menggeser (belum disimpan). */
+  previewVolume(volume: number): void;
   interactions: Interactions;
   /** true bila berhasil tersimpan. */
   saveNow(): Promise<boolean>;
@@ -78,7 +81,10 @@ export class Ui {
   private fishEl: HTMLElement;
   private rateEl: HTMLElement;
   private feedBtn: HTMLButtonElement;
+  private feedLabel: HTMLElement;
   private shopBtn: HTMLButtonElement;
+  private soundBtn: HTMLButtonElement;
+  private soundIcon: HTMLImageElement;
   private toyBtn: HTMLButtonElement;
   private treatBtn: HTMLButtonElement;
   private treatCount: HTMLElement;
@@ -104,8 +110,33 @@ export class Ui {
   ) {
     this.fishEl = h("span", { class: "hud-fish" }, "0");
     this.rateEl = h("span", { class: "hud-rate" }, "0/dtk");
-    this.feedBtn = h("button", { class: "btn btn-feed", onclick: () => this.feedAll() }, "Beri makan");
-    this.shopBtn = h("button", { class: "btn", onclick: () => this.togglePanel("toko") }, "Toko");
+    /** Tombol dengan ikon (mode ringkas) dan tulisan (mode lengkap). */
+    const iconLabel = (icon: ObjectId, label: string) => [
+      h("img", { class: "px ico", src: objectImageUrl(icon, 2), alt: "" }),
+      h("span", { class: "lbl" }, label),
+    ];
+    this.feedLabel = h("span", { class: "lbl" }, "Beri makan");
+    this.feedBtn = h(
+      "button",
+      { class: "btn btn-feed", onclick: () => this.feedAll() },
+      h("img", { class: "px ico", src: objectImageUrl("mangkuk", 2), alt: "" }),
+      this.feedLabel,
+    );
+    this.shopBtn = h("button", { class: "btn btn-text", title: "Toko", onclick: () => this.togglePanel("toko") }, ...iconLabel("bag", "Toko"));
+    this.soundIcon = h("img", { class: "px", src: objectImageUrl("speaker", 2), alt: "Suara" });
+    this.soundBtn = h(
+      "button",
+      {
+        class: "btn btn-icon btn-mode",
+        title: "Suara",
+        onclick: () => {
+          const on = !this.game.state.settings.sound;
+          this.game.updateSettings({ sound: on });
+          if (on) this.deps.sound("meow");
+        },
+      },
+      this.soundIcon,
+    );
     this.toyBtn = h(
       "button",
       { class: "btn btn-icon btn-mode", title: "Mainan bulu: kucing mengejar kursormu", onclick: () => this.toggleToy() },
@@ -131,7 +162,14 @@ export class Ui {
       { class: "card hud", "data-hit": true },
       h(
         "div",
-        { class: "hud-counter", title: "Ikan" },
+        {
+          class: "hud-counter",
+          title: "Ikan",
+          // Saat diciutkan, pil ikan ini membuka panel bawah lagi.
+          onclick: () => {
+            if (this.game.state.settings.hudCollapsed) this.setCollapsed(false);
+          },
+        },
         h("img", { class: "px hud-icon", src: objectImageUrl("fish", 2), alt: "" }),
         h("div", { class: "hud-numbers" }, this.fishEl, this.rateEl),
       ),
@@ -144,10 +182,14 @@ export class Ui {
         { class: "btn btn-icon btn-mode", title: "Asisten: pengingat, fokus, tugas", onclick: () => this.togglePanel("asisten") },
         h("img", { class: "px", src: objectImageUrl("bell", 2), alt: "Asisten" }),
       ),
+      this.soundBtn,
       this.shopBtn,
-      h("button", { class: "btn", onclick: () => this.togglePanel("kucing") }, "Kucing"),
+      h("button", { class: "btn btn-text", title: "Kucing", onclick: () => this.togglePanel("kucing") }, ...iconLabel("paw", "Kucing")),
       h("button", { class: "btn btn-icon", title: "Menu lain", onclick: () => this.togglePanel("koleksi") }, "⋯"),
+      h("button", { class: "btn btn-icon hud-collapse", title: "Kecilkan panel", onclick: () => this.setCollapsed(true) }, "‹"),
+      h("button", { class: "btn btn-icon hud-expand", title: "Besarkan panel", onclick: () => this.setCollapsed(false) }, "›"),
     );
+    this.applyHudSettings();
     this.toasts = h("div", { class: "toasts" });
     root.append(this.toasts, this.hud);
     this.assistant = new AssistantUi(root, game, {
@@ -205,11 +247,35 @@ export class Ui {
     this.feedBtn.style.display = needs ? "" : "none";
     if (needs) {
       const cost = this.game.feedPrice(now);
-      this.feedBtn.textContent = `Beri makan · ${formatFish(cost)}`;
+      this.feedLabel.textContent = `Beri makan · ${formatFish(cost)}`;
+      this.feedBtn.title = `Beri makan semua kucing · ${formatFish(cost)} ikan`;
       this.feedBtn.disabled = s.fish < cost;
+    }
+    // Saat diciutkan, titik merah menandakan kucing lapar.
+    this.hud.classList.toggle("needs-food", needs);
+    const soundOn = s.settings.sound;
+    const soundIcon = objectImageUrl(soundOn ? "speaker" : "speakerOff", 2);
+    if (this.soundIcon.src !== soundIcon) {
+      this.soundIcon.src = soundIcon;
+      this.soundBtn.title = soundOn ? "Suara menyala (klik untuk bisukan)" : "Suara mati (klik untuk nyalakan)";
     }
     this.shopBtn.classList.toggle("has-dot", this.anythingAffordable());
     this.refreshModes();
+  }
+
+  /** Terapkan ukuran, keadaan ciut, dan kepekatan panel bawah dari pengaturan. */
+  applyHudSettings(): void {
+    const st = this.game.state.settings;
+    this.hud.classList.toggle("size-compact", st.hudSize === "compact");
+    this.hud.classList.toggle("size-full", st.hudSize !== "compact");
+    this.hud.classList.toggle("collapsed", st.hudCollapsed);
+    this.hud.style.setProperty("--hud-opacity", String(st.hudOpacity));
+  }
+
+  private setCollapsed(collapsed: boolean): void {
+    if (collapsed) this.closePanel();
+    this.game.updateSettings({ hudCollapsed: collapsed });
+    this.deps.sound("pop");
   }
 
   /** Perbarui tombol mainan/camilan di HUD. */
@@ -341,6 +407,10 @@ export class Ui {
         break;
       case "inventory":
         this.refreshModes();
+        break;
+      case "settings":
+        this.applyHudSettings();
+        this.refreshHud(Date.now());
         break;
       case "released":
         this.toast(`${e.cat.name} pamit dan pergi menjelajah dunia. Selamat jalan, ${e.cat.name}!`, 6000);
@@ -1055,7 +1125,77 @@ export class Ui {
     const g = this.game;
     const st = g.state.settings;
     const stats = g.state.stats;
+    const slider = (value: number, min: number, max: number, onInput: (v: number) => void, onChange: (v: number) => void) =>
+      h("input", {
+        type: "range",
+        class: "slider",
+        min,
+        max,
+        step: 5,
+        value: Math.round(value * 100),
+        oninput: (e: Event) => onInput(Number((e.target as HTMLInputElement).value) / 100),
+        onchange: (e: Event) => {
+          onChange(Number((e.target as HTMLInputElement).value) / 100);
+          (e.target as HTMLInputElement).blur();
+        },
+      });
     body.append(
+      h("h3", null, "Suara"),
+      this.toggle("Efek suara (eongan, dengkur, bunyi pengingat)", st.sound, (v) => {
+        g.updateSettings({ sound: v });
+        if (v) this.deps.sound("meow");
+      }),
+      h(
+        "div",
+        { class: "setting" },
+        h("span", null, `Volume`),
+        h(
+          "div",
+          { class: "form-row tight" },
+          slider(st.volume, 0, 100, (v) => this.deps.previewVolume(v), (v) => {
+            g.updateSettings({ volume: v });
+            this.deps.sound("meow");
+          }),
+          h("button", { class: "btn small", title: "Coba suara", onclick: () => this.deps.sound("meow") }, "Coba"),
+        ),
+      ),
+      this.toggle("Musik latar santai (kotak musik)", st.music, (v) => g.updateSettings({ music: v })),
+      h("h3", null, "Panel bawah"),
+      h(
+        "div",
+        { class: "setting" },
+        h("span", null, "Ukuran"),
+        h(
+          "div",
+          { class: "segmented" },
+          ...(
+            [
+              ["full", "Lengkap"],
+              ["compact", "Ringkas"],
+            ] as const
+          ).map(([size, label]) =>
+            h(
+              "button",
+              { class: `btn small${st.hudSize === size ? " active" : ""}`, onclick: () => g.updateSettings({ hudSize: size, hudCollapsed: false }) },
+              label,
+            ),
+          ),
+          h("button", { class: "btn small", title: "Ciutkan jadi pil kecil (klik pil untuk membuka lagi)", onclick: () => this.setCollapsed(true) }, "Mini"),
+        ),
+      ),
+      h(
+        "div",
+        { class: "setting" },
+        h("span", null, "Kepekatan saat tidak disorot"),
+        slider(
+          st.hudOpacity,
+          30,
+          100,
+          (v) => this.hud.style.setProperty("--hud-opacity", String(v)),
+          (v) => g.updateSettings({ hudOpacity: v }),
+        ),
+      ),
+      h("p", { class: "desc" }, "Panel kembali pekat saat kursor berada di atasnya."),
       h("h3", null, "Cara berinteraksi"),
       h(
         "ul",
@@ -1081,7 +1221,6 @@ export class Ui {
         ),
       ),
       this.toggle("Mode Fokus (animasi tenang, hemat daya)", st.focusMode, (v) => g.updateSettings({ focusMode: v })),
-      this.toggle("Efek suara", st.sound, (v) => g.updateSettings({ sound: v })),
       h("h3", null, "Statistik"),
       h(
         "ul",
