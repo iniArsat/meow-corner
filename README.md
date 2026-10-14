@@ -8,6 +8,21 @@ Game idle kucing yang tinggal di strip bawah layar desktop. Kucing-kucing berjal
 
 Buka halaman **[Releases](https://github.com/iniArsat/meow-corner/releases/latest)**, unduh file yang berakhiran `-setup.exe`, lalu klik dua kali untuk memasang. Installer dibuat otomatis oleh GitHub Actions setiap ada perubahan di branch `main`.
 
+## Baru di versi 0.6: ngobrol dengan kucing dan kucing ikut mengetik
+
+**Ngobrol dengan kucing.** Klik kanan seekor kucing (atau tombol **Ngobrol** di panel Kucing). Gelembung kata muncul di atas kepalanya, kucing "berbicara" huruf demi huruf sambil menggerakkan mulut, lalu kamu memilih jawaban.
+- Jawabannya berbeda menurut **sifat** (pemalas, aktif, rakus, penjelajah, manja), **keakraban** (kucing yang belum akrab masih malu-malu), rasa lapar, jam, dan cuaca di kotamu.
+- Kucing tahu **isi asistenmu**: bisa membacakan tugas teratas, pengingat terdekat, sisa waktu fokus, dan mengajak mulai sesi fokus.
+- Ada 19 topik, di antaranya cerita kucing, fakta kucing sungguhan, curhat dan minta semangat, main, tidur, rahasia (mulai 3 hati), dan teman-teman kucingnya. Isinya ratusan variasi kalimat.
+- Kucing yang sudah cukup akrab menanyakan **namamu** dan memakainya, termasuk di sapaan pagi.
+- Dari obrolan bisa memberi camilan, memberi makan semua, mengeluarkan mainan bulu, atau minta maaf ke kucing yang ngambek. Mengobrol menambah ikatan.
+- Sesekali kucing **berceloteh** sendiri atau mengajak ngobrol ("Psst... sini sebentar"). Sapaan pagi/siang/sore/malam kini diucapkan kucing. Bisa dimatikan di ⋯ → Atur → Obrolan.
+
+**Kucing ikut mengetik** (ala Bongo Cat). Setiap kamu mengetik atau mengeklik di mana saja, seekor kucing duduk di depan keyboard mini dan menepuknya mengikuti ritmemu. Setiap ketukan memberi sedikit ikan (maksimal 15 ketukan per detik dihitung).
+- **Privasi:** fitur ini baru menyala setelah kamu setuju. Yang dihitung hanya **jumlah** ketukan. Tombol apa yang ditekan tidak dicatat, tidak disimpan, dan tidak dikirim ke mana pun. Penghitung berhenti saat strip tersembunyi (misalnya ada game layar penuh), dan ketukan buatan program (makro, auto-clicker) tidak dihitung.
+- Pilih kucing pengetiknya, lihat jumlah ketukan hari ini, atau matikan fitur ini di ⋯ → Atur.
+- 6 prestasi baru untuk mengobrol dan mengetik.
+
 ## Baru di versi 0.5: cuaca dan waktu sungguhan
 
 Strip kini mengikuti **cuaca dan jam di kotamu**. Pilih kota lewat tombol cuaca di panel bawah (atau lonceng → **Cuaca**): cari nama kota, atau tekan **Deteksi otomatis**. Data cuaca diambil dari [Open-Meteo](https://open-meteo.com) (gratis, tanpa akun) setiap 20 menit.
@@ -167,6 +182,7 @@ src/
     assistant.ts Jadwal pengingat, timer fokus, pengingat sehat (waktu lokal)
     achievements.ts Daftar prestasi dan hadiahnya
     weather.ts   Kode cuaca, fase hari, warna cahaya, pembaca respons Open-Meteo
+    dialogue.ts  Mesin obrolan kucing; isi kalimatnya di dialogueLines.ts
     state.ts     State awal dan migrasi simpanan
     save.ts      Simpan/muat dengan cadangan
   render/      Tampilan PixiJS
@@ -176,11 +192,13 @@ src/
     effects.ts   Partikel (hati, bintang, not musik, debu, remah)
     ambient.ts   Kupu-kupu dan kunang-kunang
     weatherFx.ts Hujan, genangan, awan, kabut, salju, daun, kilat, bulan dan bintang
-  ui/          HUD, panel, dialog (HTML + CSS); assistantUi.ts = tab Asisten dan kartu pesan
+  ui/          HUD, panel, dialog (HTML + CSS); assistantUi.ts = tab Asisten dan kartu pesan;
+               chatUi.ts = gelembung obrolan dan celoteh
   platform/    Jembatan ke Tauri dan klik tembus; weatherService.ts = ambil cuaca dan cari kota
 src-tauri/
   src/lib.rs   Jendela, klik tembus, tray, deteksi layar penuh, file simpanan,
-               penjadwal pengingat + notifikasi Windows, penyimpanan foto
+               penjadwal pengingat + notifikasi Windows, penyimpanan foto,
+               penghitung ketukan keyboard/klik (Windows, hanya jumlahnya)
 tests/         Tes unit Vitest
 ```
 
@@ -207,6 +225,6 @@ $env:PREVIEW="C:\folder\tujuan"; npx vitest run tests/sprites.test.ts
 - Deteksi aplikasi layar penuh baru diimplementasikan untuk Windows.
 - Belum diuji di macOS. Di Linux, jendela transparan butuh compositor.
 - Integrasi Steam (achievement, Steam Cloud) belum ada; rencananya lewat crate `steamworks` di sisi Rust.
-- Reaksi terhadap ketikan/klik di aplikasi lain belum ada (butuh hook input global).
+- Penghitung ketukan seluruh sistem baru ada di Windows. Di macOS/Linux hanya ketukan di dalam jendela Meow Corner yang terhitung.
 - Efek suara dan musik masih sintetis (dibuat oleh kode, tanpa file audio).
 - Cuaca butuh internet. Tanpa koneksi, strip memakai jam komputer (terbit 06.00, terbenam 18.00) dan cuaca cerah.

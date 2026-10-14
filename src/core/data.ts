@@ -424,4 +424,14 @@ export const BALANCE = {
   wellnessRewardSeconds: 20,
   /** Hadiah harian ikan = produksi selama sekian detik × hari berturut-turut (maks 10). */
   dailyFishSeconds: 60,
+
+  // --- Obrolan dan mengetik (v6) ---
+  /** Ikatan dari mengobrol, paling sering sekali per jeda untuk setiap kucing. */
+  bondPerChat: 2,
+  chatBondCooldownMs: 10 * 60_000,
+  /** Ikan per ketukan = produksi selama sekian detik (minimal tapMinFish). */
+  tapFishSeconds: 0.05,
+  tapMinFish: 0.2,
+  /** Ketukan per detik yang dihitung paling banyak (sisanya diabaikan). */
+  tapMaxPerSecond: 15,
 } as const;

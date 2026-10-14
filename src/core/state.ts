@@ -6,6 +6,7 @@ import { defaultWeather, migrateWeather } from "./weather";
 import { ACCESSORY_BY_ID, BALANCE, COAT_BY_ID, TRAIT_IDS, UPGRADE_BY_ID } from "./data";
 import type {
   CatState,
+  ChatState,
   FacilityId,
   GameState,
   GiftItem,
@@ -14,6 +15,7 @@ import type {
   Settings,
   Stats,
   TraitId,
+  TypingState,
   VisitorState,
 } from "./types";
 import { FACILITY_IDS } from "./types";
@@ -21,9 +23,9 @@ import { FACILITY_IDS } from "./types";
 /**
  * v1: rilis pertama. v2: ikatan, aksesori, camilan, hadiah. v3: asisten, prestasi,
  * hadiah harian. v4: suara menyala bawaan, volume, musik, ukuran panel bawah.
- * v5: cuaca dan waktu.
+ * v5: cuaca dan waktu. v6: obrolan dengan kucing dan kucing ikut mengetik.
  */
-export const SAVE_VERSION = 5;
+export const SAVE_VERSION = 6;
 
 const MINUTE = 60_000;
 
@@ -62,7 +64,26 @@ function defaultStats(now: number): Stats {
     todosDone: 0,
     wellnessDone: 0,
     photos: 0,
+    chats: 0,
+    taps: 0,
   };
+}
+
+export function defaultChat(): ChatState {
+  return { playerName: "", askedName: false, chatter: true, story: {} };
+}
+
+export function defaultTyping(): TypingState {
+  return { enabled: false, asked: false, catId: null, today: 0, todayDate: "", fishToday: 0, best: 0 };
+}
+
+/** Nama panggilan pemain: dipangkas, tanpa karakter kendali, paling panjang 20 huruf. */
+export function cleanPlayerName(raw: string): string {
+  return raw
+    .replace(/[\u0000-\u001f\u007f<>{}]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 20);
 }
 
 export function createInitialState(now: number): GameState {
@@ -105,6 +126,8 @@ export function createInitialState(now: number): GameState {
     achievements: [],
     daily: { lastDate: "", streak: 0, best: 0 },
     weather: defaultWeather(),
+    chat: defaultChat(),
+    typing: defaultTyping(),
   };
 }
 
@@ -212,6 +235,36 @@ function migrateInventory(raw: unknown): Inventory {
   return { treats: Math.floor(num(raw.treats, 0, 0)), accessories };
 }
 
+function migrateChat(raw: unknown, catIds: Set<string>): ChatState {
+  const base = defaultChat();
+  if (!isRecord(raw)) return base;
+  const story: Record<string, number> = {};
+  if (isRecord(raw.story)) {
+    for (const [id, v] of Object.entries(raw.story)) if (catIds.has(id)) story[id] = Math.floor(num(v, 0, 0));
+  }
+  return {
+    playerName: cleanPlayerName(str(raw.playerName, "")),
+    askedName: raw.askedName === true,
+    chatter: raw.chatter !== false,
+    story,
+  };
+}
+
+function migrateTyping(raw: unknown, catIds: Set<string>): TypingState {
+  const base = defaultTyping();
+  if (!isRecord(raw)) return base;
+  const catId = str(raw.catId, "");
+  return {
+    enabled: raw.enabled === true,
+    asked: raw.asked === true,
+    catId: catIds.has(catId) ? catId : null,
+    today: Math.floor(num(raw.today, 0, 0)),
+    todayDate: /^\d{4}-\d{2}-\d{2}$/.test(str(raw.todayDate, "")) ? (raw.todayDate as string) : "",
+    fishToday: num(raw.fishToday, 0, 0),
+    best: Math.floor(num(raw.best, 0, 0)),
+  };
+}
+
 export function migrateState(raw: unknown, now: number): GameState | null {
   if (!isRecord(raw)) return null;
   const base = createInitialState(now);
@@ -273,6 +326,8 @@ export function migrateState(raw: unknown, now: number): GameState | null {
     stats.todosDone = num(rs.todosDone, 0, 0);
     stats.wellnessDone = num(rs.wellnessDone, 0, 0);
     stats.photos = num(rs.photos, 0, 0);
+    stats.chats = num(rs.chats, 0, 0);
+    stats.taps = num(rs.taps, 0, 0);
   }
 
   const daily = { lastDate: "", streak: 0, best: 0 };
@@ -322,5 +377,7 @@ export function migrateState(raw: unknown, now: number): GameState | null {
       : [],
     daily,
     weather: migrateWeather(raw.weather),
+    chat: migrateChat(raw.chat, new Set(cats.map((c) => c.id))),
+    typing: migrateTyping(raw.typing, new Set(cats.map((c) => c.id))),
   };
 }

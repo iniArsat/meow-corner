@@ -135,6 +135,11 @@ export class AssistantUi {
     this.present(alert, catId);
   }
 
+  /** Ada kartu pesan yang sedang tampil. */
+  hasAlert(): boolean {
+    return this.current !== null;
+  }
+
   /** Kucing pembawa pesan diklik: sama dengan menekan tombol utama. */
   dismissForCat(catId: string): void {
     if (this.current?.catId === catId) this.finish("ok");

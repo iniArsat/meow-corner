@@ -63,7 +63,9 @@ export type CatMode =
   | "leave"
   | "announce"
   | "stretch"
-  | "yawn";
+  | "yawn"
+  | "talk"
+  | "type";
 
 interface Anim {
   frames: CatPose[];
@@ -104,10 +106,12 @@ const ANIMS: Record<CatMode, Anim> = {
   announce: { frames: ["sitAlert", "sitAlert", "sitHappy"], seconds: 0.6 },
   stretch: { frames: ["stretch"], seconds: 1 },
   yawn: { frames: ["sitYawn", "sitBlink", "sitBlink"], seconds: 0.9 },
+  talk: { frames: ["sitTalk", "sit2", "sitTalk", "sitHappy"], seconds: 0.16 },
+  type: { frames: ["tapUp"], seconds: 1 },
 };
 
 /** Mode yang tidak terganggu kalau kucing ditinggal sendiri dan tidak sedang bergerak. */
-const CALM: ReadonlySet<CatMode> = new Set(["idle", "sit", "groom", "watch", "wait", "happy", "proud", "beg", "sulk", "announce"]);
+const CALM: ReadonlySet<CatMode> = new Set(["idle", "sit", "groom", "watch", "wait", "happy", "proud", "beg", "sulk", "announce", "talk"]);
 
 /** Mode yang bisa ditimpa oleh keinginan lain (mainan, camilan, ajakan bermain). */
 const INTERRUPTIBLE: ReadonlySet<CatMode> = new Set([
@@ -175,6 +179,8 @@ export class CatActor {
   private noteTimer = 0;
   private dustTimer = 0;
   private crumbTimer = 0;
+  /** Sisa waktu pose menepuk keyboard. */
+  private tapTimer = 0;
 
   private targetX = 0;
   private speed = 0;
@@ -323,6 +329,8 @@ export class CatActor {
       case "yawn":
         this.modeDuration = duration ?? 2.7;
         break;
+      case "talk":
+      case "type":
       case "announce":
       case "beg":
       case "wait":
@@ -443,6 +451,13 @@ export class CatActor {
     this.landingSpot = landing;
     if (Math.abs(this.vx) > 30) this.dir = this.vx > 0 ? 1 : -1;
     this.setMode("fall");
+  }
+
+  /** Satu tepukan ke keyboard (mode "type"). */
+  tap(): void {
+    if (this.mode !== "type") return;
+    this.tapTimer = 0.09;
+    this.squash = 0.94;
   }
 
   /** Tampilkan ikon di atas kepala, dengan atau tanpa gelembung. */
@@ -606,6 +621,11 @@ export class CatActor {
       this.frameIndex = (this.frameIndex + 1) % anim.frames.length;
     }
     let pose = anim.frames[this.frameIndex % anim.frames.length];
+
+    if (this.mode === "type") {
+      this.tapTimer -= dt;
+      return this.tapTimer > 0 ? "tapDown" : "tapUp";
+    }
 
     if (this.mode === "held") {
       // Kaki menendang-nendang saat diayun cepat.

@@ -1,11 +1,12 @@
 //! Sisi native Meow Corner: jendela strip transparan di atas taskbar, klik tembus,
 //! ikon tray, penyembunyian otomatis saat ada aplikasi layar penuh, file simpanan,
-//! jadwal pengingat dengan notifikasi Windows, dan penyimpanan foto.
+//! jadwal pengingat dengan notifikasi Windows, penyimpanan foto, dan penghitung
+//! ketukan keyboard/klik untuk kucing yang ikut mengetik (hanya jumlahnya).
 
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -396,6 +397,152 @@ fn spawn_fullscreen_watcher(app: AppHandle, vis: SharedVisibility) {
 }
 
 // ---------------------------------------------------------------------------
+// Kucing ikut mengetik: hitung ketukan keyboard dan klik mouse di seluruh sistem.
+// Hanya JUMLAH yang dicatat. Tombol apa yang ditekan tidak disimpan, tidak dikirim
+// ke halaman, dan tidak pernah keluar dari komputer. Pengait dilepas saat fitur dimatikan.
+
+/// Ketukan yang belum dikirim ke halaman.
+static TAPS: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(windows)]
+mod input_hook {
+    use super::TAPS;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Mutex;
+    use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
+        TranslateMessage, UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED, MSG,
+        MSLLHOOKSTRUCT, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+        WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
+    };
+
+    /// Waktu (ms sejak boot, dari Windows) tombol terakhir kali turun; 0 = sedang tidak ditekan.
+    /// Tombol yang ditahan mengirim key-down berulang (auto-repeat) tiap ~30 ms dan
+    /// hanya dihitung sekali. Bila key-up tidak pernah sampai (layar kunci, Ctrl+Alt+Del,
+    /// jendela admin), jeda lebih dari 1 detik dianggap tekanan baru.
+    static LAST_DOWN: [AtomicU32; 256] = {
+        #[allow(clippy::declare_interior_mutable_const)]
+        const UP: AtomicU32 = AtomicU32::new(0);
+        [UP; 256]
+    };
+    const REPEAT_GAP_MS: u32 = 1000;
+    /// Id thread pengait; 0 = tidak berjalan.
+    static THREAD: AtomicU32 = AtomicU32::new(0);
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    unsafe extern "system" fn keyboard(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code == HC_ACTION as i32 && lparam != 0 {
+            let info = &*(lparam as *const KBDLLHOOKSTRUCT);
+            let slot = &LAST_DOWN[(info.vkCode & 0xff) as usize];
+            match wparam as u32 {
+                WM_KEYDOWN | WM_SYSKEYDOWN => {
+                    let now = info.time.max(1);
+                    let before = slot.swap(now, Ordering::Relaxed);
+                    let fresh = before == 0 || now.wrapping_sub(before) > REPEAT_GAP_MS;
+                    // Ketukan buatan program (makro, auto-clicker) tidak dihitung.
+                    if fresh && info.flags & LLKHF_INJECTED == 0 {
+                        TAPS.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                WM_KEYUP | WM_SYSKEYUP => slot.store(0, Ordering::Relaxed),
+                _ => {}
+            }
+        }
+        CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+    }
+
+    unsafe extern "system" fn mouse(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code == HC_ACTION as i32 && lparam != 0 {
+            let info = &*(lparam as *const MSLLHOOKSTRUCT);
+            let pressed = matches!(wparam as u32, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN);
+            if pressed && info.flags & LLMHF_INJECTED == 0 {
+                TAPS.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+    }
+
+    /// Pasang atau lepas pengait. Mengembalikan true bila pengait sedang terpasang.
+    pub fn set_enabled(enabled: bool) -> bool {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let running = THREAD.load(Ordering::SeqCst);
+        if !enabled {
+            if running != 0 {
+                // Thread pengait keluar dari loop pesan lalu melepas kedua pengait.
+                // Bila pesan gagal terkirim, thread itu sudah berhenti (dan pengaitnya ikut lepas).
+                unsafe { PostThreadMessageW(running, WM_QUIT, 0, 0) };
+                THREAD.store(0, Ordering::SeqCst);
+            }
+            return false;
+        }
+        if running != 0 {
+            return true;
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
+        std::thread::spawn(move || unsafe {
+            let module = GetModuleHandleW(std::ptr::null());
+            let kb = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), module, 0);
+            let ms = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse), module, 0);
+            if kb.is_null() && ms.is_null() {
+                let _ = tx.send(false);
+                return;
+            }
+            // Pastikan antrean pesan thread ini ada sebelum id-nya diumumkan,
+            // agar WM_QUIT dari set_enabled(false) pasti diterima.
+            let mut msg: MSG = std::mem::zeroed();
+            PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
+            THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
+            let _ = tx.send(true);
+            // Pengait tingkat rendah butuh loop pesan di thread yang memasangnya.
+            while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            if !kb.is_null() {
+                UnhookWindowsHookEx(kb);
+            }
+            if !ms.is_null() {
+                UnhookWindowsHookEx(ms);
+            }
+            for slot in &LAST_DOWN {
+                slot.store(0, Ordering::Relaxed);
+            }
+        });
+        // Thread selalu menjawab (atau berhenti, yang membuat recv gagal), jadi menunggu
+        // tanpa batas waktu aman dan mencegah pengait terpasang setelah dianggap gagal.
+        rx.recv().unwrap_or(false)
+    }
+}
+
+#[cfg(not(windows))]
+mod input_hook {
+    /// Belum ada di macOS/Linux; halaman memakai ketukan di dalam jendela sendiri.
+    pub fn set_enabled(_enabled: bool) -> bool {
+        false
+    }
+}
+
+/// Nyalakan/matikan penghitung ketukan. true bila penghitung seluruh sistem aktif.
+#[tauri::command]
+fn set_typing_hook(enabled: bool) -> bool {
+    input_hook::set_enabled(enabled)
+}
+
+/// Kirim jumlah ketukan ke halaman beberapa kali per detik.
+fn spawn_tap_emitter(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(120));
+        let taps = TAPS.swap(0, Ordering::Relaxed);
+        if taps > 0 {
+            let _ = app.emit("input-taps", taps);
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Tray
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -453,6 +600,7 @@ pub fn run() {
             set_schedule,
             save_photo,
             open_photo_folder,
+            set_typing_hook,
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -465,6 +613,7 @@ pub fn run() {
             }
             spawn_fullscreen_watcher(app.handle().clone(), visibility.clone());
             spawn_scheduler(app.handle().clone(), schedule.clone());
+            spawn_tap_emitter(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

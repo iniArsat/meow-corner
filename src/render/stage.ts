@@ -4,6 +4,7 @@
 
 import { Application, Container, Graphics, Rectangle, Sprite, Text, TextureSource } from "pixi.js";
 import type { Alert, AlertKind } from "../core/assistant";
+import type { ChatAnim } from "../core/dialogue";
 import { BALANCE, FACILITIES } from "../core/data";
 import { hearts as heartCount, isHungry } from "../core/economy";
 import { formatFish } from "../core/format";
@@ -52,7 +53,28 @@ export interface StageActions {
   modesChanged(): void;
   /** Kucing pembawa pesan diklik: anggap pesannya sudah dibaca. */
   alertCatClicked(catId: string): void;
+  /** Klik kanan kucing: buka obrolan. */
+  chat(catId: string): void;
+  /** Klik kanan kucing liar yang mampir. */
+  visitorTalk(): void;
 }
+
+/** Sesi kucing ikut mengetik: kucing duduk di depan keyboard mini. */
+interface TypingSession {
+  actor: CatActor;
+  keyboard: Sprite;
+  lastTap: number;
+  /** Tepukan yang belum dianimasikan. */
+  pending: number;
+  tapCooldown: number;
+  keyTimer: number;
+  flip: boolean;
+  fish: number;
+  fishTimer: number;
+}
+
+/** Diam tanpa ketukan selama ini: kucing berhenti mengetik. */
+const TYPING_IDLE_MS = 6_000;
 
 /** Ikon gelembung untuk setiap jenis pesan asisten. */
 const ALERT_ICON: Record<AlertKind, ObjectId> = {
@@ -348,6 +370,9 @@ export class Stage implements ActorHost {
   private tint = 0xffffff;
   private light: [number, number, number] = [255, 255, 255];
   readonly weatherFx = new WeatherFx();
+  private typing: TypingSession | null = null;
+  /** Tidak ada kucing yang bisa mengetik: jangan mencari lagi sampai waktu ini. */
+  private typingRetryAt = 0;
 
   private constructor(app: Application, game: Game, actions: StageActions) {
     this.app = app;
@@ -798,6 +823,15 @@ export class Stage implements ActorHost {
   }
 
   private onDown(e: PointerEvent): void {
+    if (e.button === 2) {
+      // Klik kanan kucing: ajak ngobrol.
+      const actor = this.actorAt(e.clientX, e.clientY);
+      if (!actor) return;
+      e.preventDefault();
+      if (actor.isVisitor) this.actions.visitorTalk();
+      else this.actions.chat(actor.id);
+      return;
+    }
     if (e.button !== 0) return;
     const target = this.targetAt(e.clientX, e.clientY);
     if (!target) return;
@@ -984,7 +1018,16 @@ export class Stage implements ActorHost {
       this.fx.hearts(head.x, head.y, 1);
       return;
     }
-    if (this.treatMode && this.giveTreat(a)) return;
+    if (this.treatMode && this.treatCat(a.id)) return;
+
+    if (a.task === "chat") {
+      // Dielus sambil diajak ngobrol: senang, lalu kembali mendengarkan.
+      this.actions.pet(a.id);
+      const head = a.headPos();
+      this.fx.hearts(head.x, head.y, 2);
+      if (a.mode !== "sulk") a.setMode("happy", 1.2);
+      return;
+    }
 
     if (a.mode === "sulk") {
       a.emote("anger", 1, false);
@@ -1085,7 +1128,10 @@ export class Stage implements ActorHost {
       this.fx.notes(head.x, head.y, 2);
       a.extendMode(10);
     } else if (!a.airborne && !a.hidden && a.mode !== "treat") {
+      // Yang sedang diajak ngobrol tetap dalam obrolan setelah mendengkur.
+      const chatting = a.task === "chat";
       a.cancelTask();
+      if (chatting) a.task = "chat";
       a.setMode("purr", 4.5);
     }
     if (gained) {
@@ -1309,17 +1355,18 @@ export class Stage implements ActorHost {
     }
   }
 
-  /** Sapaan pagi/siang/sore/malam: seekor kucing datang dengan ikon cuaca. */
-  greet(): void {
+  /** Sapaan pagi/siang/sore/malam: seekor kucing datang dengan ikon cuaca. Mengembalikan id-nya. */
+  greet(): string | null {
     this.refreshWorld(Date.now());
     const free = this.freeCats();
     const a = free[Math.floor(Math.random() * free.length)];
-    if (!a) return;
+    if (!a) return null;
     a.emote(this.weatherIcon(), 3);
     if (this.phase === "pagi" || this.phase === "fajar") a.setMode("stretch", 2.5, () => a.setMode("happy", 1.5));
     else if (this.phase === "malam") a.setMode("yawn", 2.7);
     else a.setMode("happy", 2);
     this.actions.sound("meow");
+    return a.id;
   }
 
   // -------------------------------------------------------------------------
@@ -1329,7 +1376,10 @@ export class Stage implements ActorHost {
   private messengers = new Map<string, { key: string; kind: AlertKind; since: number; nextBeep: number }>();
 
   private pickMessenger(): CatActor | null {
-    const list = this.residents().filter((a) => !a.removed && a !== this.dragging && a.task !== "alert");
+    const all = this.residents().filter((a) => !a.removed && a !== this.dragging && a.task !== "alert");
+    // Kucing yang sedang diajak ngobrol tidak dipakai bila ada yang lain.
+    const others = all.filter((a) => a.task !== "chat");
+    const list = others.length > 0 ? others : all;
     if (list.length === 0) return null;
     const bond = (a: CatActor) => this.game.cat(a.id)?.bond ?? 0;
     // Yang paling sayang padamu, tapi jangan selalu yang sama bila ikatan setara.
@@ -1547,6 +1597,276 @@ export class Stage implements ActorHost {
   }
 
   // -------------------------------------------------------------------------
+  // Obrolan
+
+  /**
+   * Kucing berhenti dan mendengarkan. Mengembalikan suasana hatinya, atau null
+   * bila kucing sedang tidak bisa diajak ngobrol (diangkat, di udara, membawa pesan).
+   */
+  startChat(catId: string): { mood: "normal" | "sleepy" | "sulk" } | null {
+    const a = this.cats.get(catId);
+    if (!a || a.removed || a.airborne || a.hidden || a === this.dragging || a.task === "alert" || a.exitTo !== null) return null;
+    if (this.typing?.actor === a) this.endTyping(false);
+    const mood = a.mode === "sulk" || a.mode === "angry" ? "sulk" : a.mode === "sleep" ? "sleepy" : "normal";
+    a.cancelTask();
+    a.task = "chat";
+    a.rub = 0;
+    if (mood === "sulk") a.setMode("sulk", Infinity);
+    else if (mood === "sleepy") a.setMode("yawn", 2.7);
+    else {
+      if (this.cursor) a.face(this.cursor.x);
+      a.setMode("sit", Infinity);
+    }
+    return { mood };
+  }
+
+  /** Kucing masih dalam obrolan (belum diangkat, dipanggil, atau membawa pesan). */
+  isChatting(catId: string): boolean {
+    return this.cats.get(catId)?.task === "chat";
+  }
+
+  /** Mulut bergerak selama kucing "berbicara". */
+  chatTalk(catId: string, talking: boolean): void {
+    const a = this.cats.get(catId);
+    if (!a || a.task !== "chat") return;
+    if (talking && (a.mode === "sit" || a.mode === "talk")) a.setMode("talk");
+    else if (!talking && a.mode === "talk") a.setMode("sit", Infinity);
+  }
+
+  /** Gerakan kucing sebagai jawaban (senang, mendengkur, menguap...). */
+  chatAnim(catId: string, anim: ChatAnim): void {
+    const a = this.cats.get(catId);
+    if (!a || a.task !== "chat" || a.airborne) return;
+    const head = a.headPos();
+    switch (anim) {
+      case "talk":
+        break;
+      case "happy":
+        a.setMode("happy", 1.6);
+        break;
+      case "purr":
+        a.setMode("purr", 3);
+        this.fx.hearts(head.x, head.y, 2);
+        this.actions.sound("purr");
+        break;
+      case "proud":
+        a.setMode("proud", 2);
+        break;
+      case "stretch":
+        a.setMode("stretch", 2.5);
+        break;
+      case "yawn":
+        a.setMode("yawn", 2.7);
+        break;
+      case "play":
+        a.setMode("play", 2);
+        break;
+      case "groom":
+        a.setMode("groom", 2.5);
+        break;
+      case "startled":
+        a.setMode("startled", 0.5);
+        break;
+      case "sleep":
+      case "zoomies":
+        // Ditangani saat obrolan berakhir.
+        break;
+    }
+  }
+
+  /** Hati melayang dari kucing yang diajak ngobrol. */
+  chatHearts(catId: string): void {
+    const a = this.cats.get(catId);
+    if (!a) return;
+    const head = a.headPos();
+    this.fx.hearts(head.x, head.y, 3);
+  }
+
+  /** Beri camilan langsung dari obrolan. */
+  treatCat(catId: string): boolean {
+    const a = this.cats.get(catId);
+    if (!a || a.airborne) return false;
+    const chatting = a.task === "chat";
+    const ok = this.giveTreat(a);
+    // Setelah makan camilan ia kembali mendengarkan.
+    if (ok && chatting) a.task = "chat";
+    return ok;
+  }
+
+  /** Kucing yang ngambek memaafkan. */
+  forgive(catId: string): void {
+    const a = this.cats.get(catId);
+    if (!a) return;
+    a.clicks = [];
+    if (a.mode === "sulk" || a.mode === "angry") {
+      a.setMode("happy", 1.6);
+      const head = a.headPos();
+      this.fx.hearts(head.x, head.y, 2);
+    }
+  }
+
+  /** Obrolan selesai: kucing kembali beraktivitas (atau tidur/zoomies sebagai penutup). */
+  endChat(catId: string, final?: ChatAnim): void {
+    const a = this.cats.get(catId);
+    if (!a || a.task !== "chat") return;
+    a.task = null;
+    if (a.airborne) return;
+    if (final === "sleep") {
+      a.setMode("sleep");
+      return;
+    }
+    if (final === "zoomies" && !a.spot && !this.focusMode) {
+      this.zoomies(a);
+      return;
+    }
+    if (a.mode === "sulk") a.setMode("sulk", rand(3, 6));
+    else if (a.mode === "sit" || a.mode === "talk") a.setMode("sit", rand(2, 4));
+  }
+
+  /** Kucing bebas yang bisa berceloteh sekarang, atau null. */
+  pickChatterCat(): string | null {
+    const list = this.freeCats().filter((a) => !a.removed && a.mode !== "sleep" && a.exitTo === null);
+    if (list.length === 0) return null;
+    return list[Math.floor(Math.random() * list.length)].id;
+  }
+
+  /** Kucing mengajak ngobrol: ikon gelembung kata dan menoleh ke pemain. */
+  inviteChat(catId: string): void {
+    const a = this.cats.get(catId);
+    if (!a || a.task || a.airborne) return;
+    a.emote("chat", 8);
+    if (a.calm || a.mode === "walk") {
+      const [minX, maxX] = this.walkRange();
+      a.face(this.cursor?.x ?? (minX + maxX) / 2);
+      a.setMode("sit", 8);
+    }
+    this.actions.sound("meow");
+  }
+
+  /** Celoteh singkat: mulut bergerak sebentar. */
+  chatterTalk(catId: string): void {
+    const a = this.cats.get(catId);
+    if (!a || a.task || a.airborne || !a.calm) return;
+    a.setMode("talk", 1.2, () => a.setMode("sit", rand(2, 4)));
+  }
+
+  // -------------------------------------------------------------------------
+  // Kucing ikut mengetik
+
+  /** Ketukan keyboard/klik baru: kucing pengetik menepuk keyboard mini. */
+  onTaps(count: number, fish: number): void {
+    if (count <= 0) return;
+    const now = performance.now();
+    let t = this.typing;
+    if (t && (t.actor.removed || t.actor.task !== "type" || t.actor.airborne)) {
+      this.endTyping(false);
+      t = null;
+    }
+    if (!t) {
+      if (now < this.typingRetryAt) return;
+      t = this.beginTyping();
+      if (!t) {
+        this.typingRetryAt = now + 3000;
+        return;
+      }
+    }
+    t.lastTap = now;
+    t.pending = Math.min(8, t.pending + count);
+    t.fish += fish;
+  }
+
+  private typistCandidate(): CatActor | null {
+    // Hanya kucing yang sedang santai di lantai; yang sedang makan, menuju mangkuk,
+    // kesal, tidur, atau bermain tidak diganggu.
+    const ok = (a: CatActor) =>
+      !a.removed &&
+      !a.spot &&
+      a !== this.dragging &&
+      a.exitTo === null &&
+      a.task === null &&
+      (a.mode === "idle" || a.mode === "sit" || a.mode === "groom" || a.mode === "watch");
+    const preferred = this.game.state.typing.catId;
+    if (preferred) {
+      const a = this.cats.get(preferred);
+      if (a && ok(a)) return a;
+    }
+    const bond = (a: CatActor) => this.game.cat(a.id)?.bond ?? 0;
+    const list = this.residents().filter(ok);
+    list.sort((p, q) => bond(q) - bond(p));
+    return list[0] ?? null;
+  }
+
+  private beginTyping(): TypingSession | null {
+    const a = this.typistCandidate();
+    if (!a) return null;
+    const s = this.pixelScale;
+    a.cancelTask();
+    a.task = "type";
+    const [minX, maxX] = this.walkRange();
+    // Keyboard di depan kucing, menghadap ke sisi yang lebih lapang.
+    if (a.x + a.dir * 18 * s > maxX || a.x + a.dir * 18 * s < minX) a.dir = a.dir === 1 ? -1 : 1;
+    const keyboard = new Sprite(objectTexture("keyboard"));
+    keyboard.anchor.set(0.5, 1);
+    keyboard.scale.set(s * a.dir, s);
+    keyboard.position.set(Math.round(a.x + a.dir * 10 * s), this.groundY);
+    this.giftLayer.addChild(keyboard);
+    this.fx.dust(keyboard.x, this.groundY, 3);
+    a.setMode("type");
+    this.typing = { actor: a, keyboard, lastTap: performance.now(), pending: 0, tapCooldown: 0, keyTimer: 0, flip: false, fish: 0, fishTimer: 1.5 };
+    return this.typing;
+  }
+
+  private endTyping(stretch: boolean): void {
+    const t = this.typing;
+    if (!t) return;
+    this.typing = null;
+    this.fx.dust(t.keyboard.x, this.groundY, 3);
+    t.keyboard.destroy();
+    const a = t.actor;
+    if (a.task === "type") {
+      a.task = null;
+      if (stretch && !a.airborne) a.setMode("stretch", 2.2);
+      else if (a.mode === "type") a.needsDecision = true;
+    }
+  }
+
+  private updateTyping(dt: number, now: number): void {
+    const t = this.typing;
+    if (!t) return;
+    const a = t.actor;
+    if (a.removed || a.task !== "type" || a.airborne || !this.game.state.typing.enabled) {
+      this.endTyping(false);
+      return;
+    }
+    const s = this.pixelScale;
+    t.keyboard.position.set(Math.round(a.x + a.dir * 10 * s), this.groundY);
+    t.keyboard.scale.set(s * a.dir, s);
+    t.tapCooldown -= dt;
+    if (t.pending > 0 && t.tapCooldown <= 0) {
+      t.pending -= 1;
+      t.tapCooldown = 0.075;
+      t.flip = !t.flip;
+      t.keyTimer = 0.08;
+      a.tap();
+      t.keyboard.texture = objectTexture(t.flip ? "keyboardTap" : "keyboardTap2");
+    }
+    if (t.keyTimer > 0) {
+      t.keyTimer -= dt;
+      if (t.keyTimer <= 0) t.keyboard.texture = objectTexture("keyboard");
+    }
+    t.fishTimer -= dt;
+    if (t.fishTimer <= 0) {
+      t.fishTimer = 2.5;
+      if (t.fish > 0) {
+        this.fx.text(t.keyboard.x, this.groundY - 10 * s, `+${formatFish(t.fish)}`, 0xfff3b0, 12);
+        t.fish = 0;
+      }
+    }
+    if (performance.now() - t.lastTap > TYPING_IDLE_MS) this.endTyping(true);
+    void now;
+  }
+
+  // -------------------------------------------------------------------------
   // Perintah dari UI
 
   /** Panggil kucing: ia berlari mendekat ke kursor (atau tengah strip). */
@@ -1630,6 +1950,17 @@ export class Stage implements ActorHost {
         // Pembawa pesan tetap menunggu sampai pesannya dibaca.
         a.setMode("announce");
         return;
+      case "chat":
+        // Sedang diajak ngobrol: duduk mendengarkan.
+        a.setMode("sit", Infinity);
+        return;
+      case "type":
+        if (this.typing?.actor === a) {
+          a.setMode("type");
+          return;
+        }
+        a.task = null;
+        break;
       case null:
         break;
       default:
@@ -2409,7 +2740,8 @@ export class Stage implements ActorHost {
         if (a.isVisitor) {
           const fed = this.game.state.visitor?.fed ?? 0;
           text = fed >= 3 ? "Mau tinggal di sini!" : `Kucing liar · beri makan (${fed}/3)`;
-        } else {
+        } else if (a.task !== "chat") {
+          // Kucing yang sedang diajak ngobrol sudah punya gelembungnya sendiri.
           const cat = this.game.cat(a.id);
           if (cat) {
             const h = heartCount(cat);
@@ -2599,6 +2931,7 @@ export class Stage implements ActorHost {
     }
     this.updateSocials(dt);
     this.updateMessengers();
+    this.updateTyping(dt, now);
 
     const v = this.visitor;
     if (v) {

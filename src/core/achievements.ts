@@ -56,6 +56,12 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: "sehat-10", name: "Hidup sehat", description: "Ikuti pengingat sehat 10 kali.", progress: stat(10, (s) => s.stats.wellnessDone), reward: { treats: 3 } },
   { id: "harian-7", name: "Setia", description: "Buka Meow Corner 7 hari berturut-turut.", progress: stat(7, (s) => s.daily.best), reward: { treats: 10 } },
   { id: "foto-1", name: "Fotografer", description: "Ambil foto kucing-kucingmu.", progress: stat(1, (s) => s.stats.photos), reward: { treats: 2 } },
+  { id: "ngobrol-1", name: "Halo, meong", description: "Ngobrol dengan kucing (klik kanan kucingnya).", progress: stat(1, (s) => s.stats.chats), reward: { treats: 1 } },
+  { id: "ngobrol-30", name: "Teman curhat", description: "Ngobrol dengan kucing 30 kali.", progress: stat(30, (s) => s.stats.chats), reward: { treats: 5 } },
+  { id: "kenalan", name: "Kenalan", description: "Beri tahu kucing namamu.", progress: stat(1, (s) => (s.chat.playerName ? 1 : 0)), reward: { treats: 2 }, secret: true },
+  { id: "ketik-1rb", name: "Rekan kerja", description: "Mengetik 1.000 ketukan bersama kucing.", progress: stat(1000, (s) => s.stats.taps), reward: { treats: 3 } },
+  { id: "ketik-10rb", name: "Jari besi", description: "Mengetik 10.000 ketukan bersama kucing.", progress: stat(10_000, (s) => s.stats.taps), reward: { fishSeconds: 900 } },
+  { id: "ketik-100rb", name: "Pianis keyboard", description: "Mengetik 100.000 ketukan bersama kucing.", progress: stat(100_000, (s) => s.stats.taps), reward: { treats: 10 } },
   { id: "pamit", name: "Selamat jalan", description: "Lepaskan seekor kucing ke dunia luar.", progress: stat(1, (s) => s.stats.catsReleased), reward: { treats: 1 }, secret: true },
 ];
 

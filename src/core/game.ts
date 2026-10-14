@@ -44,11 +44,13 @@ import {
   type Alert,
   type DueItem,
 } from "./assistant";
-import { createInitialState } from "./state";
+import { cleanPlayerName, createInitialState } from "./state";
 import { currentWeather, dayPhase, greetKey, sunFor, type DayPhase } from "./weather";
 import type {
   AssistantState,
   CatState,
+  ChatState,
+  TypingState,
   FacilityId,
   GameState,
   GiftItem,
@@ -103,7 +105,11 @@ export type GameEvent =
    * data pertama/lokasi baru/efek dinyalakan (tanpa pengumuman).
    */
   | { type: "weatherChanged"; from: WeatherKind; to: WeatherKind; reason: "live" | "manual" | "other" }
-  | { type: "greeting"; phase: DayPhase };
+  | { type: "greeting"; phase: DayPhase }
+  /** Pengaturan obrolan atau nama pemain berubah. */
+  | { type: "chat" }
+  /** Pengaturan kucing mengetik berubah. */
+  | { type: "typing" };
 
 type Listener = (e: GameEvent) => void;
 
@@ -554,6 +560,9 @@ export class Game {
     this.lastPetBond.delete(catId);
     this.lastToyCatch.delete(catId);
     this.lastPurr.delete(catId);
+    this.lastChatBond.delete(catId);
+    delete s.chat.story[catId];
+    if (s.typing.catId === catId) s.typing.catId = null;
     s.stats.catsReleased += 1;
     this.emit({ type: "released", cat });
     return cat;
@@ -1164,6 +1173,100 @@ export class Game {
     w.greeted = key;
     this.emit({ type: "greeting", phase });
     return phase;
+  }
+
+  // -------------------------------------------------------------------------
+  // Obrolan (v6)
+
+  private lastChatBond = new Map<string, number>();
+
+  /** Catat satu obrolan yang dimulai. */
+  chatStarted(): void {
+    this.state.stats.chats += 1;
+  }
+
+  /** Ikatan dari mengobrol; paling sering sekali per jeda untuk setiap kucing. */
+  chatBond(catId: string, now: number): boolean {
+    const cat = this.cat(catId);
+    if (!cat) return false;
+    const last = this.lastChatBond.get(catId);
+    if (last !== undefined && now - last < BALANCE.chatBondCooldownMs) return false;
+    this.lastChatBond.set(catId, now);
+    cat.lastPetAt = now;
+    this.addBond(cat, BALANCE.bondPerChat);
+    return true;
+  }
+
+  /** Simpan nama panggilan pemain ("" = tidak mau memberi tahu). */
+  setPlayerName(name: string): string {
+    const clean = cleanPlayerName(name);
+    this.state.chat.playerName = clean;
+    this.state.chat.askedName = true;
+    this.emit({ type: "chat" });
+    return clean;
+  }
+
+  updateChat(patch: Partial<Pick<ChatState, "chatter" | "askedName">>): void {
+    Object.assign(this.state.chat, patch);
+    this.emit({ type: "chat" });
+  }
+
+  /** Nomor cerita berikutnya untuk kucing ini (berputar setelah semua cerita habis). */
+  nextStory(catId: string, count: number): number {
+    if (count <= 0) return 0;
+    const story = this.state.chat.story;
+    const index = Math.floor(story[catId] ?? 0) % count;
+    story[catId] = index + 1;
+    return index;
+  }
+
+  // -------------------------------------------------------------------------
+  // Kucing ikut mengetik (v6)
+
+  private tapWindowStart = 0;
+  private tapWindowCount = 0;
+
+  /**
+   * Tambahkan ketukan keyboard/klik. Hanya jumlahnya yang diketahui game.
+   * Ketukan di atas batas per detik diabaikan. Mengembalikan [ketukan dihitung, ikan].
+   */
+  addTaps(count: number, now: number): [number, number] {
+    const t = this.state.typing;
+    if (!t.enabled || !(count > 0)) return [0, 0];
+    if (now - this.tapWindowStart >= 1000 || now < this.tapWindowStart) {
+      this.tapWindowStart = now;
+      this.tapWindowCount = 0;
+    }
+    const n = Math.min(Math.floor(count), BALANCE.tapMaxPerSecond - this.tapWindowCount);
+    if (n <= 0) return [0, 0];
+    this.tapWindowCount += n;
+    const today = dateKey(now);
+    if (t.todayDate !== today) {
+      t.todayDate = today;
+      t.today = 0;
+      t.fishToday = 0;
+    }
+    const fish = n * Math.max(BALANCE.tapMinFish, this.rate(now) * BALANCE.tapFishSeconds);
+    this.addFish(fish);
+    t.today += n;
+    t.fishToday += fish;
+    t.best = Math.max(t.best, t.today);
+    this.state.stats.taps += n;
+    return [n, fish];
+  }
+
+  updateTyping(patch: Partial<Pick<TypingState, "enabled" | "asked" | "catId">>): void {
+    const t = this.state.typing;
+    if (patch.catId !== undefined && patch.catId !== null && !this.cat(patch.catId)) patch = { ...patch, catId: null };
+    Object.assign(t, patch);
+    if (patch.enabled !== undefined) t.asked = true;
+    this.emit({ type: "typing" });
+  }
+
+  /** Ketukan hari ini (0 bila tanggal sudah berganti). */
+  tapsToday(now: number): number {
+    const t = this.state.typing;
+    return t.todayDate === dateKey(now) ? t.today : 0;
   }
 
   // -------------------------------------------------------------------------

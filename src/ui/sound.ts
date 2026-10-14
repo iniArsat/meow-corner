@@ -194,6 +194,7 @@ export type SoundId =
   | "hiss"
   | "thud"
   | "chirp"
+  | "talk"
   | "pop"
   | "crunch"
   | "levelup"
@@ -204,7 +205,7 @@ export type SoundId =
   | "thunder";
 
 /** Jeda minimal antar-bunyi yang sama, agar klik beruntun tidak jadi bising. */
-const MIN_GAP_MS: Partial<Record<SoundId, number>> = { meow: 350, pet: 120, purr: 900, pop: 50, chirp: 120, crunch: 200 };
+const MIN_GAP_MS: Partial<Record<SoundId, number>> = { meow: 350, pet: 120, purr: 900, pop: 50, chirp: 120, crunch: 200, talk: 220 };
 const lastPlayed = new Map<SoundId, number>();
 
 export function playSound(id: SoundId): void {
@@ -246,6 +247,10 @@ export function playSound(id: SoundId): void {
       break;
     case "chirp":
       meow({ pitch: 1.6, duration: 0.16, vol: 0.05 });
+      break;
+    case "talk":
+      // Gumaman kucing saat "berbicara" di gelembung obrolan.
+      meow({ pitch: 1.1 + Math.random() * 0.45, duration: 0.16 + Math.random() * 0.12, vol: 0.04, trill: Math.random() < 0.35 });
       break;
     case "pop":
       tone([500, 950], 0.09, "square", 0.03);

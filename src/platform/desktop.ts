@@ -105,6 +105,26 @@ export async function openPhotoFolder(): Promise<void> {
   await invoke("open_photo_folder");
 }
 
+/**
+ * Nyalakan/matikan penghitung ketukan keyboard dan klik di seluruh sistem (Windows).
+ * Hanya jumlahnya yang dikirim. Mengembalikan true bila penghitung sistem aktif;
+ * false berarti halaman cukup menghitung ketukan di jendelanya sendiri.
+ */
+export async function setTypingHook(enabled: boolean): Promise<boolean> {
+  if (!isTauri) return false;
+  try {
+    return await invoke<boolean>("set_typing_hook", { enabled });
+  } catch {
+    return false;
+  }
+}
+
+/** Jumlah ketukan baru dari sisi Rust (beberapa kali per detik). */
+export async function onInputTaps(cb: (count: number) => void): Promise<void> {
+  if (!isTauri) return;
+  await listen<number>("input-taps", (e) => cb(e.payload));
+}
+
 class TauriSaveBackend implements SaveBackend {
   load(): Promise<string | null> {
     return invoke<string | null>("load_save");

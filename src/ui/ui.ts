@@ -76,6 +76,10 @@ export interface UiDeps {
   openPhotoFolder(): Promise<void>;
   canOpenFolder: boolean;
   weather: WeatherHost;
+  /** Buka obrolan dengan seekor kucing. */
+  chat(catId: string): void;
+  /** Penghitung ketukan seluruh sistem sedang aktif (Windows). */
+  typingSystemWide(): boolean;
 }
 
 export class Ui {
@@ -412,7 +416,7 @@ export class Ui {
         this.showAdoptDialog();
         break;
       case "visitorLeft":
-        if (this.dialog) this.closeDialog();
+        if (this.dialog && !this.dialog.classList.contains("consent")) this.closeDialog();
         break;
       case "adopted":
         this.toast(`${e.cat.name} resmi bergabung!`);
@@ -444,9 +448,6 @@ export class Ui {
       case "settings":
         this.applyHudSettings();
         this.refreshHud(Date.now());
-        break;
-      case "greeting":
-        this.toast(this.greetingText(e.phase), 8000);
         break;
       case "weatherChanged": {
         const w = this.game.state.weather;
@@ -489,11 +490,12 @@ export class Ui {
     if (this.panelIdle()) this.renderPanel();
   }
 
-  private greetingText(phase: "pagi" | "siang" | "sore" | "malam" | string): string {
+  greetingText(phase: "pagi" | "siang" | "sore" | "malam" | string): string {
     const now = Date.now();
     const w = this.game.state.weather;
     const cw = currentWeather(w, now);
-    const hello = `Selamat ${phase}!`;
+    const name = this.game.state.chat.playerName;
+    const hello = `Selamat ${phase}${name ? `, ${name}` : ""}!`;
     let info = "";
     if (cw.source !== "none") {
       info = `${w.place && cw.source === "live" ? `${w.place.name} ` : "Hari ini "}${WEATHER_LABEL[cw.kind].toLowerCase()}${cw.temp !== null && cw.source === "live" ? `, ${Math.round(cw.temp)}°` : ""}.`;
@@ -775,7 +777,7 @@ export class Ui {
   // -------------------------------------------------------------------------
   // Tab Kucing
 
-  private feedAll(): void {
+  feedAll(): void {
     const now = Date.now();
     if (this.game.feedAll(now)) {
       this.deps.sound("feed");
@@ -853,6 +855,18 @@ export class Ui {
               "button",
               {
                 class: "btn small",
+                title: "Ngobrol dengan kucing ini (atau klik kanan kucingnya di strip)",
+                onclick: () => {
+                  this.closePanel();
+                  this.deps.chat(cat.id);
+                },
+              },
+              "Ngobrol",
+            ),
+            h(
+              "button",
+              {
+                class: "btn small",
                 title: "Panggil kucing ini ke dekat kursor",
                 onclick: () => {
                   this.deps.interactions.callCat(cat.id);
@@ -870,7 +884,7 @@ export class Ui {
       h(
         "p",
         { class: "desc help" },
-        "Klik = elus · gerakkan kursor bolak-balik di atas kucing = usap sampai mendengkur · seret = angkat (jatuhkan di fasilitas untuk menugaskan). Jangan diklik terus-terusan, nanti ngambek!",
+        "Klik = elus · klik kanan = ngobrol · gerakkan kursor bolak-balik di atas kucing = usap sampai mendengkur · seret = angkat (jatuhkan di fasilitas untuk menugaskan). Jangan diklik terus-terusan, nanti ngambek!",
       ),
     );
   }
@@ -1262,11 +1276,14 @@ export class Ui {
         ),
       ),
       h("p", { class: "desc" }, "Panel kembali pekat saat kursor berada di atasnya."),
+      ...this.renderChatSettings(),
+      ...this.renderTypingSettings(),
       h("h3", null, "Cara berinteraksi"),
       h(
         "ul",
         { class: "plain" },
         h("li", null, h("b", null, "Klik"), " kucing untuk mengelus (bonus semangat +10%)."),
+        h("li", null, h("b", null, "Klik kanan"), " kucing untuk mengobrol. Pilih kalimatmu, kucing menjawab sesuai sifat dan suasana hatinya."),
         h("li", null, h("b", null, "Usap"), ": gerakkan kursor bolak-balik di atas kucing tanpa klik sampai ia mendengkur. Memberi ikatan."),
         h("li", null, h("b", null, "Seret"), " kucing untuk mengangkatnya. Jatuhkan di atas fasilitas untuk menugaskannya, atau ke dalam kardus."),
         h("li", null, h("b", null, "Mainan bulu"), " (tombol bulu): kucing mengejar dan menerkam. Tangkapan memberi ikan dan ikatan."),
@@ -1299,6 +1316,7 @@ export class Ui {
         h("li", null, `Bulu ditangkap: ${stats.toyCatches} · Hadiah diterima: ${stats.giftsReceived}`),
         h("li", null, `Sesi fokus: ${stats.focusSessions} · Tugas selesai: ${stats.todosDone} · Pengingat: ${stats.remindersFired}`),
         h("li", null, `Hadiah harian: ${g.state.daily.streak} hari berturut-turut (rekor ${g.state.daily.best})`),
+        h("li", null, `Obrolan: ${stats.chats} · Ketukan bersama kucing: ${Math.floor(stats.taps).toLocaleString("id-ID")}`),
         h("li", null, `Batas progres offline: ${offlineCapHours(g.state)} jam`),
       ),
       h("h3", null, "Aplikasi"),
@@ -1339,6 +1357,75 @@ export class Ui {
         confirm ? "Semua progres akan hilang. Klik lagi untuk menghapus." : "Hapus semua progres",
       ),
     );
+  }
+
+  private renderChatSettings(): HTMLElement[] {
+    const g = this.game;
+    const chat = g.state.chat;
+    const nameInput = h("input", {
+      class: "field-input grow",
+      maxLength: 20,
+      placeholder: "Misalnya Arya",
+      value: chat.playerName,
+      onkeydown: (e: KeyboardEvent) => {
+        e.stopPropagation();
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      },
+      onchange: (e: Event) => {
+        const name = g.setPlayerName((e.target as HTMLInputElement).value);
+        this.toast(name ? `Kucing-kucing akan memanggilmu ${name}.` : "Nama panggilan dihapus. Kucing memanggilmu \"kamu\".");
+      },
+    });
+    return [
+      h("h3", null, "Obrolan"),
+      h("div", { class: "setting" }, h("span", null, "Nama panggilanmu"), h("div", { class: "form-row tight" }, nameInput)),
+      this.toggle("Kucing sesekali berceloteh dan mengajak ngobrol", chat.chatter, (v) => g.updateChat({ chatter: v })),
+      h("p", { class: "desc" }, "Klik kanan seekor kucing di strip (atau tombol Ngobrol di panel Kucing) untuk mengobrol."),
+    ];
+  }
+
+  private renderTypingSettings(): HTMLElement[] {
+    const g = this.game;
+    const t = g.state.typing;
+    const now = Date.now();
+    const today = g.tapsToday(now);
+    const fishToday = today > 0 ? t.fishToday : 0;
+    const select = h(
+      "select",
+      {
+        class: "field-input",
+        disabled: !t.enabled,
+        onchange: (e: Event) => {
+          const v = (e.target as HTMLSelectElement).value;
+          g.updateTyping({ catId: v || null });
+          (e.target as HTMLSelectElement).blur();
+        },
+      },
+      h("option", { value: "", selected: t.catId === null }, "Otomatis (yang paling sayang)"),
+      ...[...g.state.cats]
+        .sort((a, b) => a.adoptedAt - b.adoptedAt)
+        .map((c) => h("option", { value: c.id, selected: t.catId === c.id }, c.name)),
+    );
+    const wide = this.deps.typingSystemWide();
+    return [
+      h("h3", null, "Kucing ikut mengetik"),
+      this.toggle("Kucing menepuk keyboard mini setiap kamu mengetik atau mengeklik", t.enabled, (v) => g.updateTyping({ enabled: v })),
+      h("div", { class: "setting" }, h("span", null, "Kucing pengetik"), select),
+      h(
+        "p",
+        { class: "desc" },
+        `Hari ini: ${today.toLocaleString("id-ID")} ketukan (+${formatFish(fishToday)} ikan) · rekor sehari ${t.best.toLocaleString("id-ID")}.`,
+      ),
+      h(
+        "p",
+        { class: "desc" },
+        t.enabled && wide
+          ? "Privasi: hanya JUMLAH ketukan yang dihitung. Tombol apa yang kamu tekan tidak dicatat, tidak disimpan, dan tidak dikirim ke mana pun. Penghitung berhenti saat ada game layar penuh. Matikan kapan saja di sini."
+          : t.enabled
+            ? "Di perangkat ini hanya ketukan di dalam jendela Meow Corner yang terhitung."
+            : "Mati. Penghitung ketukan tidak berjalan dan tidak terpasang.",
+      ),
+    ];
   }
 
   private toggle(label: string, value: boolean, onChange: (v: boolean) => void): HTMLElement {
@@ -1409,6 +1496,67 @@ export class Ui {
     );
     this.root.append(this.dialog);
     queueMicrotask(() => input.focus());
+  }
+
+  /**
+   * Minta izin menyalakan "kucing ikut mengetik" (penghitung ketukan seluruh sistem).
+   * false bila dialog lain sedang tampil (coba lagi nanti).
+   */
+  showTypingConsent(): boolean {
+    if (this.dialog) return false;
+    const g = this.game;
+    const close = () => this.closeDialog();
+    this.dialog = h(
+      "div",
+      { class: "card dialog consent", "data-hit": true },
+      h("div", { class: "dialog-title" }, "Baru: kucing ikut mengetik"),
+      h(
+        "div",
+        { class: "dialog-cat" },
+        h("img", { class: "px", src: objectImageUrl("keyboardTap", 3), alt: "" }),
+        h(
+          "div",
+          { class: "desc" },
+          "Setiap kamu mengetik atau mengeklik di mana saja, seekor kucing menepuk keyboard mini di strip, dan setiap ketukan memberi sedikit ikan.",
+        ),
+      ),
+      h(
+        "p",
+        { class: "desc" },
+        h("b", null, "Privasi: "),
+        "yang dihitung hanya JUMLAH ketukan. Tombol apa yang kamu tekan tidak dicatat, tidak disimpan, dan tidak dikirim ke mana pun. Penghitung berhenti saat ada game layar penuh, dan bisa dimatikan kapan saja di ⋯ → Atur.",
+      ),
+      h(
+        "div",
+        { class: "button-row" },
+        h(
+          "button",
+          {
+            class: "btn btn-primary",
+            onclick: () => {
+              g.updateTyping({ enabled: true });
+              close();
+              this.deps.sound("pet");
+              this.toast("Siap! Coba ketik sesuatu, kucingmu akan ikut menepuk keyboard.", 6000);
+            },
+          },
+          "Nyalakan",
+        ),
+        h(
+          "button",
+          {
+            class: "btn",
+            onclick: () => {
+              g.updateTyping({ enabled: false });
+              close();
+            },
+          },
+          "Nanti saja",
+        ),
+      ),
+    );
+    this.root.append(this.dialog);
+    return true;
   }
 
   closeDialog(): void {

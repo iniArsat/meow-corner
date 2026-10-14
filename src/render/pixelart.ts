@@ -94,6 +94,17 @@ const HEAD_ALERT: Grid = [
   ".hhmmmhh.",
 ];
 
+/** Berbicara: mulut sedikit terbuka. */
+const HEAD_TALK: Grid = [
+  ".r.....r.",
+  "rpr...rpr",
+  "hhhhhhhhh",
+  "hhkhhhkhh",
+  "hhehhhehh",
+  "hhhmpmhhh",
+  ".hhmkmhh.",
+];
+
 /** Menguap: mata terpejam, mulut terbuka lebar. */
 const HEAD_YAWN: Grid = [
   ".r.....r.",
@@ -167,6 +178,10 @@ const LEG_LONG: Grid = ["ll", "ll", "ll", "ll"];
 const LEG_SHORT: Grid = ["ll", "ll"];
 const LEG_SIDE: Grid = ["lll", "lll"];
 const PAW: Grid = ["ll"];
+/** Kaki depan terangkat ke depan (siap menepuk keyboard). */
+const PAW_RAISED: Grid = ["ll", "ll", "l."];
+/** Kaki depan menepuk ke bawah di depan badan. */
+const PAW_TAP: Grid = ["l.", "ll", "ll"];
 const PAW_UP: Grid = ["ll", "ll", "ll"];
 
 const TAIL_UP: Grid = [".t", "t.", "t.", "t.", ".t", ".t"];
@@ -242,6 +257,23 @@ export const CAT_POSES = {
   sitHappy: cat([...SIT_BASE(TAIL_SIT_2), { name: "head", grid: HEAD_HAPPY, x: 10, y: 3, ring: true }]),
   sitAlert: cat([...SIT_BASE(TAIL_SIT), { name: "head", grid: HEAD_ALERT, x: 10, y: 3, ring: true }]),
   sitYawn: cat([...SIT_BASE(TAIL_SIT_2), { name: "head", grid: HEAD_YAWN, x: 10, y: 3, ring: true }]),
+  sitTalk: cat([...SIT_BASE(TAIL_SIT_2), { name: "head", grid: HEAD_TALK, x: 10, y: 3, ring: true }]),
+  /** Mengetik ala Bongo Cat: satu kaki depan terangkat... */
+  tapUp: cat([
+    { name: "tail", grid: TAIL_SIT, x: 2, y: 14 },
+    { name: "body", grid: BODY_SIT, x: 7, y: 9, ring: true },
+    { name: "leg", grid: PAW, x: 13, y: 15 },
+    { name: "head", grid: HEAD_ALERT, x: 10, y: 3, ring: true },
+    { name: "leg", grid: PAW_RAISED, x: 18, y: 9, ring: true },
+  ]),
+  /** ...lalu menepuk ke bawah. */
+  tapDown: cat([
+    { name: "tail", grid: TAIL_SIT_2, x: 2, y: 14 },
+    { name: "body", grid: BODY_SIT, x: 7, y: 9, ring: true },
+    { name: "leg", grid: PAW, x: 13, y: 15 },
+    { name: "head", grid: HEAD, x: 10, y: 4, ring: true },
+    { name: "leg", grid: PAW_TAP, x: 18, y: 13, ring: true },
+  ]),
   /** Peregangan ala kucing: kaki depan terjulur, pantat naik. */
   stretch: cat([
     { name: "tail", grid: TAIL_UP, x: 3, y: 0 },
@@ -928,6 +960,26 @@ export const OBJECTS = {
     grid: ["WWWWWWW..", ".........", "..WWWWWWW", ".........", "WWWWWWW.."],
     colors: { W: "#dfe6ee" },
     outline: "#6b7686",
+  },
+  keyboard: {
+    grid: ["DDDDDDDDDDDDD", "DwDwDwDwDwDwD", "DDwDwDwDwDwDD", "DDwwwwwwwwwDD"],
+    colors: { D: "#5b6170", w: "#e8ecf2" },
+    outline: "#23262e",
+  },
+  keyboardTap: {
+    grid: ["DDDDDDDDDDDDD", "DwDwDYDwDwDwD", "DDwDwDwDwDwDD", "DDwwwwwwwwwDD"],
+    colors: { D: "#5b6170", w: "#e8ecf2", Y: "#ffd25e" },
+    outline: "#23262e",
+  },
+  keyboardTap2: {
+    grid: ["DDDDDDDDDDDDD", "DwDwDwDwDwDwD", "DDwDwDwDYDwDD", "DDwwwwwwwwwDD"],
+    colors: { D: "#5b6170", w: "#e8ecf2", Y: "#ffd25e" },
+    outline: "#23262e",
+  },
+  chat: {
+    grid: [".WWWWWWW.", "WWWWWWWWW", "WKWWKWWKW", "WWWWWWWWW", ".WWWWWWW.", "..WW.....", ".W......."],
+    colors: { W: "#fffaf0", K: "#6b5850" },
+    outline: "#2a1d1a",
   },
   butterfly: {
     grid: ["YY.k.YY", "YYYkYYY", "yYYkYYy", ".YYkYY.", ".yY.Yy."],

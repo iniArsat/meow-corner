@@ -183,6 +183,10 @@ export interface Stats {
   todosDone: number;
   wellnessDone: number;
   photos: number;
+  /** Obrolan dengan kucing (v6). */
+  chats: number;
+  /** Ketukan keyboard dan klik yang ikut "diketik" kucing (v6). */
+  taps: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +315,36 @@ export interface WeatherState {
   greeted: string;
 }
 
+// ---------------------------------------------------------------------------
+// Obrolan dan kucing ikut mengetik (v6)
+
+export interface ChatState {
+  /** Nama panggilan pemain; "" = belum diberi tahu (dipanggil "kamu"). */
+  playerName: string;
+  /** Kucing sudah pernah menanyakan nama pemain. */
+  askedName: boolean;
+  /** Kucing sesekali berceloteh dan mengajak ngobrol. */
+  chatter: boolean;
+  /** Cerita berikutnya untuk setiap kucing (indeks daftar cerita). */
+  story: Record<string, number>;
+}
+
+export interface TypingState {
+  /** Hitung ketukan keyboard dan klik di seluruh komputer (hanya jumlahnya). Mati sampai pemain setuju. */
+  enabled: boolean;
+  /** Pemain sudah pernah ditanya mau menyalakan fitur ini atau tidak. */
+  asked: boolean;
+  /** Kucing pengetik pilihan pemain, atau null = dipilih otomatis. */
+  catId: string | null;
+  /** Ketukan hari ini dan tanggal lokalnya ("YYYY-MM-DD"). */
+  today: number;
+  todayDate: string;
+  /** Ikan dari ketukan hari ini. */
+  fishToday: number;
+  /** Rekor ketukan dalam sehari. */
+  best: number;
+}
+
 export interface DailyState {
   /** Tanggal lokal "YYYY-MM-DD" hadiah harian terakhir. */
   lastDate: string;
@@ -349,6 +383,8 @@ export interface GameState {
   achievements: string[];
   daily: DailyState;
   weather: WeatherState;
+  chat: ChatState;
+  typing: TypingState;
 }
 
 /** Konteks yang memengaruhi perhitungan produksi. */

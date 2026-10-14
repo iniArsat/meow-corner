@@ -1296,3 +1296,174 @@ body.browser {
   font-size: 11.5px;
   color: var(--ink-soft);
 }
+
+/* Obrolan dengan kucing (v6) ------------------------------------------- */
+
+.chat-bubble {
+  position: absolute;
+  width: 270px;
+  padding: 8px 11px 10px;
+  z-index: 19;
+  background: #fffdf6;
+  border-radius: 14px;
+  animation: alert-in 0.25s cubic-bezier(0.2, 1.6, 0.4, 1);
+}
+
+.chat-bubble.chatter {
+  width: auto;
+  max-width: 240px;
+  padding: 7px 11px;
+  border-radius: 14px;
+}
+
+.chat-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.chat-name {
+  font-weight: 800;
+  font-size: 12px;
+  color: var(--accent-dark);
+}
+
+.chat-hearts {
+  font-size: 10px;
+  color: #e2576f;
+  letter-spacing: 1px;
+}
+
+.chat-hearts .off {
+  color: #e2d5c4;
+}
+
+.chat-close {
+  margin-left: auto;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.chat-close:hover {
+  color: var(--ink);
+}
+
+.chat-text {
+  position: relative;
+  cursor: pointer;
+  min-height: 2.6em;
+  padding-right: 12px;
+}
+
+.chat-line {
+  font-size: 14px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
+.chatter .chat-line {
+  font-size: 13px;
+}
+
+.chat-more {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  font-size: 11px;
+  color: var(--accent-dark);
+  animation: chat-bob 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes chat-bob {
+  to {
+    transform: translateY(2px);
+  }
+}
+
+.chat-choices {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.chat-bubble.has-choices .chat-choices,
+.chatter .chat-choices {
+  margin-top: 8px;
+}
+
+.chat-choice {
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  padding: 4px 10px;
+  box-shadow: 0 2px 0 var(--ink);
+  cursor: pointer;
+  animation: alert-in 0.2s ease-out both;
+}
+
+.chat-choice::before {
+  content: "› ";
+  color: var(--accent-dark);
+}
+
+.chat-choice:hover {
+  background: #ffe7c2;
+}
+
+.chat-choice:active {
+  transform: translateY(2px);
+  box-shadow: none;
+}
+
+.chat-choice:nth-child(2) {
+  animation-delay: 0.04s;
+}
+
+.chat-choice:nth-child(3) {
+  animation-delay: 0.08s;
+}
+
+.chat-choice.bye {
+  align-self: flex-end;
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 2px 4px;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.chat-choice.bye::before {
+  content: "";
+}
+
+.chat-choice.bye:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
+.chat-input {
+  display: flex;
+  gap: 6px;
+}
+
+.chat-input .field-input {
+  flex: 1;
+}
+
+.chat-tail {
+  bottom: -9px;
+}
