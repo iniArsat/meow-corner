@@ -264,6 +264,53 @@ export interface AssistantState {
   todoRewardCount: number;
 }
 
+// ---------------------------------------------------------------------------
+// Cuaca dan waktu (v5)
+
+export type WeatherKind = "clear" | "partly" | "cloudy" | "fog" | "drizzle" | "rain" | "storm" | "snow";
+
+export interface WeatherPlace {
+  name: string;
+  region: string;
+  country: string;
+  lat: number;
+  lon: number;
+}
+
+export interface WeatherSnapshot {
+  /** Kode cuaca WMO. */
+  code: number;
+  temp: number;
+  /** Suhu terasa. */
+  feels: number;
+  humidity: number;
+  /** Kecepatan angin, km/jam. */
+  wind: number;
+  isDay: boolean;
+  /** Matahari terbit/terbenam hari itu (ms epoch), 0 bila tidak diketahui. */
+  sunrise: number;
+  sunset: number;
+  /** Selisih jam kota terhadap UTC (detik), null bila tidak diketahui. */
+  utcOffset: number | null;
+  fetchedAt: number;
+}
+
+export interface WeatherState {
+  /** Efek cuaca menyala. */
+  enabled: boolean;
+  /** "auto" = cuaca sungguhan; selain itu cuaca pilihan pemain. */
+  mode: "auto" | WeatherKind;
+  place: WeatherPlace | null;
+  last: WeatherSnapshot | null;
+  /** Warna cahaya siang–malam pada kucing dan fasilitas. */
+  tint: boolean;
+  rainSound: boolean;
+  /** Kucing menyapa pagi/sore/malam dengan info cuaca. */
+  greet: boolean;
+  /** Sapaan terakhir ("YYYY-MM-DD:fase"). */
+  greeted: string;
+}
+
 export interface DailyState {
   /** Tanggal lokal "YYYY-MM-DD" hadiah harian terakhir. */
   lastDate: string;
@@ -301,6 +348,7 @@ export interface GameState {
   /** Id prestasi yang sudah terbuka. */
   achievements: string[];
   daily: DailyState;
+  weather: WeatherState;
 }
 
 /** Konteks yang memengaruhi perhitungan produksi. */

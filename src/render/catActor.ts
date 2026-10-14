@@ -208,6 +208,9 @@ export class CatActor {
   claim: string | null = null;
   /** Kucing yang dilepas: koordinat x tujuan keluar layar. */
   exitTo: number | null = null;
+  /** Sedang hujan: kucing yang berjalan memakai payung. */
+  rainy = false;
+  private umbrellaNode: Sprite | null = null;
   /** Kegiatan yang sedang dikoordinasikan Stage (sosial, mainan, hadiah...). */
   task: string | null = null;
   /** Kursor dekat kepala: kucing tampak penasaran. */
@@ -897,6 +900,23 @@ export class CatActor {
       const bob = Math.sin(now / 300) * 0.6 * s;
       this.needNode.scale.set(s * 0.75);
       this.needNode.position.set(Math.round(head.x + this.dir * 2 * s), Math.round(head.y - 2 * s + bob));
+    }
+    // Payung kecil saat berjalan di bawah hujan.
+    const walking = this.mode === "walk" || this.mode === "run" || this.mode === "arrive" || this.mode === "leave";
+    const showUmbrella = this.rainy && walking;
+    if (showUmbrella && !this.umbrellaNode) {
+      this.umbrellaNode = new Sprite(objectTexture("umbrella"));
+      this.umbrellaNode.anchor.set(0.5, 1);
+      this.container.addChild(this.umbrellaNode);
+    }
+    if (this.umbrellaNode) {
+      this.umbrellaNode.visible = showUmbrella;
+      if (showUmbrella) {
+        this.umbrellaNode.scale.set(s * 0.9);
+        // Sedikit miring ke arah jalan.
+        this.umbrellaNode.rotation = this.dir * (this.mode === "run" ? 0.25 : 0.1);
+        this.umbrellaNode.position.set(Math.round(head.x - this.dir * 1 * s), Math.round(head.y + 3 * s));
+      }
     }
     if (this.carryNode) {
       const m = this.mouthPos();

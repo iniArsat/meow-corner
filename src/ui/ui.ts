@@ -19,7 +19,8 @@ import type { CatState, FacilityId } from "../core/types";
 import { FACILITY_IDS } from "../core/types";
 import type { ObjectId } from "../render/pixelart";
 import { catImageUrl, objectImageUrl, silhouetteUrl } from "../render/textures";
-import { AssistantUi } from "./assistantUi";
+import { AssistantUi, type WeatherHost } from "./assistantUi";
+import { PHASE_LABEL, WEATHER_LABEL, currentWeather, isWet } from "../core/weather";
 import { clear, h } from "./dom";
 import type { SoundId } from "./sound";
 
@@ -74,6 +75,7 @@ export interface UiDeps {
   takePhoto(): Promise<string | null>;
   openPhotoFolder(): Promise<void>;
   canOpenFolder: boolean;
+  weather: WeatherHost;
 }
 
 export class Ui {
@@ -89,6 +91,9 @@ export class Ui {
   private treatBtn: HTMLButtonElement;
   private treatCount: HTMLElement;
   private focusChip: HTMLButtonElement;
+  private weatherChip: HTMLButtonElement;
+  private weatherIcon: HTMLImageElement;
+  private weatherTemp: HTMLElement;
   private focusText: HTMLElement;
   readonly assistant: AssistantUi;
   private panel: HTMLElement | null = null;
@@ -157,6 +162,22 @@ export class Ui {
       this.focusText,
     );
     this.focusChip.style.display = "none";
+    this.weatherIcon = h("img", { class: "px", src: objectImageUrl("sun", 2), alt: "" });
+    this.weatherTemp = h("span", { class: "mode-count" }, "");
+    this.weatherChip = h(
+      "button",
+      {
+        class: "btn btn-mode weather-chip",
+        title: "Cuaca dan waktu",
+        onclick: () => {
+          const switched = this.assistant.openSub("cuaca");
+          if (this.panel && this.tab === "asisten" && !switched) this.closePanel();
+          else this.openPanel("asisten");
+        },
+      },
+      this.weatherIcon,
+      this.weatherTemp,
+    );
     this.hud = h(
       "div",
       { class: "card hud", "data-hit": true },
@@ -175,6 +196,7 @@ export class Ui {
       ),
       this.feedBtn,
       this.focusChip,
+      this.weatherChip,
       this.toyBtn,
       this.treatBtn,
       h(
@@ -199,6 +221,7 @@ export class Ui {
       rerenderIfIdle: () => this.refreshPanelIfIdle(),
       catPosition: (id) => deps.catPosition(id),
       alertDone: (id, key) => deps.alertDone(id, key),
+      weather: deps.weather,
     });
 
     window.addEventListener("keydown", (e) => {
@@ -253,6 +276,16 @@ export class Ui {
     }
     // Saat diciutkan, titik merah menandakan kucing lapar.
     this.hud.classList.toggle("needs-food", needs);
+    // Cip cuaca: ikon langit sekarang dan suhu.
+    const w = s.weather;
+    const cw = currentWeather(w, now);
+    const icon = objectImageUrl(this.deps.weather.icon(), 2);
+    if (this.weatherIcon.src !== icon) this.weatherIcon.src = icon;
+    const temp = cw.source === "live" && cw.temp !== null ? `${Math.round(cw.temp)}°` : "";
+    if (this.weatherTemp.textContent !== temp) this.weatherTemp.textContent = temp;
+    this.weatherChip.title = w.place
+      ? `${w.place.name}: ${!w.enabled ? "efek cuaca mati" : cw.source === "none" ? "menunggu data" : WEATHER_LABEL[cw.kind].toLowerCase()} · ${PHASE_LABEL[this.game.phase(now)].toLowerCase()}`
+      : `${PHASE_LABEL[this.game.phase(now)]} · klik untuk memilih kota dan melihat cuaca`;
     const soundOn = s.settings.sound;
     const soundIcon = objectImageUrl(soundOn ? "speaker" : "speakerOff", 2);
     if (this.soundIcon.src !== soundIcon) {
@@ -412,6 +445,20 @@ export class Ui {
         this.applyHudSettings();
         this.refreshHud(Date.now());
         break;
+      case "greeting":
+        this.toast(this.greetingText(e.phase), 8000);
+        break;
+      case "weatherChanged": {
+        const w = this.game.state.weather;
+        if (e.reason !== "live") break;
+        const where = w.place ? ` di ${w.place.name}` : "";
+        if (isWet(e.to) && !isWet(e.from)) {
+          this.toast(`${e.to === "storm" ? "Badai petir" : e.to === "drizzle" ? "Gerimis" : "Hujan"} mulai turun${where}. Kucing-kucing berteduh.`, 7000);
+        } else if (isWet(e.from) && !isWet(e.to)) {
+          this.toast(`Hujan sudah reda${where}. Kucing-kucing keluar lagi.`, 6000);
+        }
+        break;
+      }
       case "released":
         this.toast(`${e.cat.name} pamit dan pergi menjelajah dunia. Selamat jalan, ${e.cat.name}!`, 6000);
         break;
@@ -440,6 +487,25 @@ export class Ui {
         break;
     }
     if (this.panelIdle()) this.renderPanel();
+  }
+
+  private greetingText(phase: "pagi" | "siang" | "sore" | "malam" | string): string {
+    const now = Date.now();
+    const w = this.game.state.weather;
+    const cw = currentWeather(w, now);
+    const hello = `Selamat ${phase}!`;
+    let info = "";
+    if (cw.source !== "none") {
+      info = `${w.place && cw.source === "live" ? `${w.place.name} ` : "Hari ini "}${WEATHER_LABEL[cw.kind].toLowerCase()}${cw.temp !== null && cw.source === "live" ? `, ${Math.round(cw.temp)}°` : ""}.`;
+    }
+    let tip = "";
+    if (isWet(cw.kind)) tip = "Sedia payung sebelum hujan, ya.";
+    else if (cw.temp !== null && cw.temp >= 31) tip = "Panas sekali, jangan lupa minum air.";
+    else if (phase === "pagi") tip = "Semangat untuk hari ini!";
+    else if (phase === "siang") tip = "Jangan lupa makan siang.";
+    else if (phase === "sore") tip = "Sebentar lagi senja, kucing-kucing mulai aktif.";
+    else if (phase === "malam") tip = "Jangan begadang terlalu malam.";
+    return [hello, info, tip].filter(Boolean).join(" ");
   }
 
   /** Pesan asisten tiba: tampilkan kartu di atas kucing pembawa pesan. */

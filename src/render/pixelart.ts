@@ -602,6 +602,30 @@ interface ObjectArt {
 
 const OBJ_OUTLINE = "#2a1d1a";
 
+/** Rak jendela: bingkai W, kaca k, awan c, matahari/bulan u, bantal C. */
+const RAK_GRID: Grid = [
+  ".WWWWWWWWWWWWWWWW.",
+  ".WkkkkkkkWkkkkkkW.",
+  ".WkccckkkWkkkkukW.",
+  ".WccccckkWkkkuuuW.",
+  ".WkkkkkkkWkkkkukW.",
+  ".WkkkkkkkWkkkkkkW.",
+  ".WWWWWWWWWWWWWWWW.",
+  ".WkkkkkkkWkkkkkkW.",
+  ".WkkkkkkkWkkcckkW.",
+  ".WkkkkkkkWkcccckW.",
+  ".WCCCCCCCCCCCCCCW.",
+  ".WCcCCCCcCCCCcCCW.",
+  "SSSSSSSSSSSSSSSSSS",
+  "..ww..........ww..",
+  "..ww..........ww..",
+  "..ww..........ww..",
+];
+
+function rakColors(sky: string, cloud: string, sun: string): Record<string, string> {
+  return { W: "#8a5a35", k: sky, c: cloud, u: sun, C: "#d9534f", S: "#6b4226", w: "#7a4e2d" };
+}
+
 export const OBJECTS = {
   mangkuk: {
     grid: [
@@ -700,36 +724,12 @@ export const OBJECTS = {
     },
     outline: OBJ_OUTLINE,
   },
-  rak: {
-    grid: [
-      ".WWWWWWWWWWWWWWWW.",
-      ".WkkkkkkkWkkkkkkW.",
-      ".WkccckkkWkkkkukW.",
-      ".WccccckkWkkkuuuW.",
-      ".WkkkkkkkWkkkkukW.",
-      ".WkkkkkkkWkkkkkkW.",
-      ".WWWWWWWWWWWWWWWW.",
-      ".WkkkkkkkWkkkkkkW.",
-      ".WkkkkkkkWkkcckkW.",
-      ".WkkkkkkkWkcccckkW.",
-      ".WCCCCCCCCCCCCCCW.",
-      ".WCcCCCCcCCCCcCCW.",
-      "SSSSSSSSSSSSSSSSSS",
-      "..ww..........ww..",
-      "..ww..........ww..",
-      "..ww..........ww..",
-    ],
-    colors: {
-      W: "#8a5a35",
-      k: "#9ed4f0",
-      c: "#ffffff",
-      u: "#ffd84d",
-      C: "#d9534f",
-      S: "#6b4226",
-      w: "#7a4e2d",
-    },
-    outline: OBJ_OUTLINE,
-  },
+  rak: { grid: RAK_GRID, colors: rakColors("#9ed4f0", "#ffffff", "#ffd84d"), outline: OBJ_OUTLINE },
+  /** Jendela rak mengikuti langit: fajar, senja, malam, hujan. */
+  rakDawn: { grid: RAK_GRID, colors: rakColors("#f9c6c9", "#fff0e6", "#ffd27a"), outline: OBJ_OUTLINE },
+  rakDusk: { grid: RAK_GRID, colors: rakColors("#f7a76c", "#ffd2b0", "#ff7b4a"), outline: OBJ_OUTLINE },
+  rakNight: { grid: RAK_GRID, colors: rakColors("#26305e", "#3a447a", "#fff3b0"), outline: OBJ_OUTLINE },
+  rakRain: { grid: RAK_GRID, colors: rakColors("#8fa3b8", "#6b7d90", "#8fa3b8"), outline: OBJ_OUTLINE },
   fish: {
     grid: ["..FFF...F", ".FFFFF.FF", "FeFFFFFF.", ".FFFFF.FF", "..FFF...F"],
     colors: { F: "#7fb2d9", e: "#1f2a35" },
@@ -878,6 +878,56 @@ export const OBJECTS = {
     grid: ["...K....", "..KK.R.R", "KKKK..R.", "KKKK.R.R", "..KK....", "...K...."],
     colors: { K: "#5a4a42", R: "#e2443e" },
     outline: "#2a1d1a",
+  },
+  cloud1: {
+    grid: ["....WWW.......", "..WWWWWWW.WW..", ".WWWWWWWWWWWW.", "WWWWWWWWWWWWWW", ".wwwwwwwwwwww."],
+    colors: { W: "#ffffff", w: "#dfe6ee" },
+    outline: "#9aa8b8",
+  },
+  cloud2: {
+    grid: ["..WWW...", ".WWWWWW.", "WWWWWWWW", ".wwwwww."],
+    colors: { W: "#ffffff", w: "#dfe6ee" },
+    outline: "#9aa8b8",
+  },
+  umbrella: {
+    grid: ["...RRRRR...", ".RRrRRRrRR.", "RRRRRRRRRRR", "R.R..K..R.R", ".....K.....", ".....K.....", "....KK....."],
+    colors: { R: "#4aa3df", r: "#c9eef7", K: "#5a4a42" },
+    outline: "#14304a",
+  },
+  sun: {
+    grid: ["....Y....", ".Y.....Y.", "...YYY...", "..YyYYY..", "Y.YYYYY.Y", "..YYYYY..", "...YYY...", ".Y.....Y.", "....Y...."],
+    colors: { Y: "#ffc93c", y: "#fff3b0" },
+    outline: "#a8620c",
+  },
+  partlyIcon: {
+    grid: ["..Y.Y....", ".YYYY....", "YYY.WWW..", ".YWWWWWW.", "WWWWWWWWW", "WWWWWWWWW", ".wwwwwww."],
+    colors: { Y: "#ffc93c", W: "#ffffff", w: "#d5dde6" },
+    outline: "#5a6676",
+  },
+  cloudIcon: {
+    grid: ["...WWW...", ".WWWWWWW.", "WWWWWWWWW", "WWWWWWWWW", ".wwwwwww."],
+    colors: { W: "#eef2f6", w: "#c3ccd6" },
+    outline: "#5a6676",
+  },
+  rainIcon: {
+    grid: ["...GGG...", ".GGGGGGG.", "GGGGGGGGG", ".ggggggg.", "..B..B...", ".B..B..B.", "B..B..B.."],
+    colors: { G: "#c9d2dc", g: "#9aa6b4", B: "#4aa3df" },
+    outline: "#3a4656",
+  },
+  stormIcon: {
+    grid: ["...DDD...", ".DDDDDDD.", "DDDDDDDDD", ".ddddYdd.", "....YY...", "...YY....", "....Y...."],
+    colors: { D: "#8d97a8", d: "#6b7486", Y: "#ffd84d" },
+    outline: "#2a3040",
+  },
+  snowIcon: {
+    grid: ["...WWW...", ".WWWWWWW.", "WWWWWWWWW", ".wwwwwww.", "..S...S..", "....S....", ".S...S..."],
+    colors: { W: "#ffffff", w: "#d5dde6", S: "#bfe3ff" },
+    outline: "#5a6676",
+  },
+  fogIcon: {
+    grid: ["WWWWWWW..", ".........", "..WWWWWWW", ".........", "WWWWWWW.."],
+    colors: { W: "#dfe6ee" },
+    outline: "#6b7686",
   },
   butterfly: {
     grid: ["YY.k.YY", "YYYkYYY", "yYYkYYy", ".YYkYY.", ".yY.Yy."],

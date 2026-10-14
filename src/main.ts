@@ -21,7 +21,19 @@ import {
 } from "./platform/desktop";
 import { pad2 } from "./core/assistant";
 import { Stage } from "./render/stage";
-import { configureSound, playSound, setMusic, setMusicPaused, unlockAudio, type SoundId } from "./ui/sound";
+import {
+  configureSound,
+  playSound,
+  setMusic,
+  setMusicPaused,
+  setRainPaused,
+  setRainSound,
+  unlockAudio,
+  type SoundId,
+} from "./ui/sound";
+import type { WeatherPlace } from "./core/types";
+import { currentWeather, isWet, needsRefresh, precipitation } from "./core/weather";
+import { detectPlace, fetchForecast, searchPlaces, weatherError } from "./platform/weatherService";
 import { Ui } from "./ui/ui";
 
 async function main(): Promise<void> {
@@ -110,7 +122,47 @@ async function main(): Promise<void> {
     takePhoto,
     openPhotoFolder,
     canOpenFolder: isTauri,
+    weather: {
+      refresh: () => refreshWeather(true),
+      search: (name) => searchPlaces(name),
+      detect: () => detectPlace(),
+      icon: () => stage.weatherIcon(),
+    },
   });
+
+  // Cuaca sungguhan: diambil saat mulai, lalu dicek tiap menit (diperbarui tiap 20 menit).
+  let weatherFetch: { place: WeatherPlace; promise: Promise<string | null> } | null = null;
+  async function refreshWeather(force = false): Promise<string | null> {
+    const place = game.state.weather.place;
+    if (!place) return "Pilih kota dulu.";
+    if (weatherFetch) {
+      // Pengambilan untuk kota yang sama sedang berjalan: tunggu hasilnya saja.
+      if (weatherFetch.place === place) return weatherFetch.promise;
+      // Kota sudah diganti: tunggu yang lama selesai, lalu ambil untuk kota baru.
+      await weatherFetch.promise;
+      return refreshWeather(force);
+    }
+    if (!force && !needsRefresh(game.state.weather, Date.now())) return null;
+    const promise = (async () => {
+      try {
+        const snap = await fetchForecast(place);
+        // Kota bisa saja diganti selama menunggu jawaban.
+        if (game.state.weather.place === place) game.setWeatherSnapshot(snap, Date.now());
+        return null;
+      } catch (err) {
+        return weatherError(err);
+      } finally {
+        weatherFetch = null;
+      }
+    })();
+    weatherFetch = { place, promise };
+    return promise;
+  }
+  const applyRain = () => {
+    const w = game.state.weather;
+    const cw = currentWeather(w, Date.now());
+    setRainSound(w.enabled && w.rainSound && isWet(cw.kind) ? precipitation(cw.kind, cw.code) : 0);
+  };
 
   // Jadwal asisten dikirim ke sisi Rust setiap kali berubah (dan berkala, untuk bunyi jam).
   let scheduleTimer = 0;
@@ -131,6 +183,9 @@ async function main(): Promise<void> {
     } else stage.sync();
     stage.onGameEvent(e);
     ui.onGameEvent(e);
+    if (e.type === "weather") applyRain();
+    else if (e.type === "weatherChanged") stage.onWeatherChanged(e.to, e.reason !== "other");
+    else if (e.type === "greeting") stage.greet();
     if (e.type === "assistant") {
       pushSchedule();
       applyQuiet();
@@ -156,6 +211,21 @@ async function main(): Promise<void> {
   applyQuiet();
   pushSchedule();
   window.setInterval(pushSchedule, 60_000);
+  applyRain();
+  void refreshWeather();
+  window.setInterval(() => {
+    void refreshWeather();
+    // Data yang menjadi usang juga mematikan suara hujan.
+    applyRain();
+  }, 60_000);
+  // Sapaan pagi/siang/sore/malam, setelah strip tenang dulu sebentar.
+  window.setTimeout(() => {
+    const greet = () => {
+      if (game.visible) game.checkGreeting(Date.now());
+    };
+    greet();
+    window.setInterval(greet, 15_000);
+  }, 6000);
   // Tamu yang sudah siap diadopsi sebelum game ditutup masih menunggu jawaban.
   if (game.state.visitor && game.state.visitor.fed >= 3) ui.showAdoptDialog();
 
@@ -206,6 +276,7 @@ async function main(): Promise<void> {
     else stage.cancelPress();
     stage.setPaused(!visible);
     setMusicPaused(!visible);
+    setRainPaused(!visible);
     if (!visible) void saver.saveNow();
   });
   await onQuitRequested(async () => {

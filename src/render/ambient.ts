@@ -14,7 +14,10 @@ export interface AmbientContext {
   maxX: number;
   width: number;
   focus: boolean;
-  hour: number;
+  /** Malam dan tidak hujan: kunang-kunang keluar. */
+  night: boolean;
+  /** Siang yang cerah: kupu-kupu boleh muncul. */
+  butterflies: boolean;
 }
 
 export function isNight(hour: number): boolean {
@@ -100,8 +103,8 @@ export class Ambient {
 
   update(dt: number, ctx: AmbientContext): void {
     const s = ctx.scale;
-    const night = isNight(ctx.hour);
-    const day = ctx.hour >= 7 && ctx.hour < 17;
+    const night = ctx.night;
+    const day = ctx.butterflies;
 
     // Kupu-kupu
     if (this.butterfly) {

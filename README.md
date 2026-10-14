@@ -8,6 +8,25 @@ Game idle kucing yang tinggal di strip bawah layar desktop. Kucing-kucing berjal
 
 Buka halaman **[Releases](https://github.com/iniArsat/meow-corner/releases/latest)**, unduh file yang berakhiran `-setup.exe`, lalu klik dua kali untuk memasang. Installer dibuat otomatis oleh GitHub Actions setiap ada perubahan di branch `main`.
 
+## Baru di versi 0.5: cuaca dan waktu sungguhan
+
+Strip kini mengikuti **cuaca dan jam di kotamu**. Pilih kota lewat tombol cuaca di panel bawah (atau lonceng → **Cuaca**): cari nama kota, atau tekan **Deteksi otomatis**. Data cuaca diambil dari [Open-Meteo](https://open-meteo.com) (gratis, tanpa akun) setiap 20 menit.
+
+**Cuaca**
+- **Hujan dan gerimis**: tetes hujan, cipratan, dan genangan yang perlahan mengering. Kucing berteduh di kardus, rak, atau di bawah tiang garuk, dan yang berjalan memakai **payung kecil**. Ada suara hujan yang lembut.
+- **Badai petir**: kilat menyambar disusul guruh; kucing kaget lalu bersembunyi.
+- **Mendung dan cerah berawan**: awan pixel melintas, cahaya sedikit kelabu. **Kabut**, **salju**, dan **daun beterbangan** saat angin kencang.
+- Pemberitahuan kecil saat hujan mulai turun atau sudah reda.
+
+**Waktu**
+- Tujuh fase hari (dini hari, fajar, pagi, siang, sore, senja, malam) dihitung dari jam **matahari terbit dan terbenam di kotamu**.
+- Cahaya kucing dan fasilitas berubah halus: merah muda saat fajar, jingga saat senja, biru redup di malam hari. Jendela rak ikut menampilkan langit yang sesuai.
+- Malam hari ada bulan, bintang, dan kunang-kunang; siang yang cerah ada kupu-kupu.
+- Kebiasaan kucing: menggeliat di pagi hari, lebih banyak tidur di malam hari, zoomies saat senja, berpelukan saat dingin.
+- Sapaan **"Selamat pagi/siang/sore/malam"** berisi cuaca hari ini, sekali per fase.
+
+**Pengaturan** (Asisten → Cuaca): cuaca bisa dipaksa (misalnya *Selalu hujan*), dan efek cuaca, warna cahaya, suara hujan/guruh, serta sapaan bisa dimatikan satu per satu. Ikon dan suhu tampil di panel bawah.
+
 ## Baru di versi 0.4: suara dan panel yang bisa dikecilkan
 
 - **Suara menyala secara bawaan.** Eongan kini disintesis dengan formant vokal "mi-a-u", ditambah dengkur, desis, dan bunyi pengingat. Ada pengatur volume, tombol bisu di panel bawah, dan **musik latar kotak musik** yang bisa dinyalakan (⋯ → Atur → Suara).
@@ -147,6 +166,7 @@ src/
     game.ts      Simulasi dan aksi pemain, mengirim event
     assistant.ts Jadwal pengingat, timer fokus, pengingat sehat (waktu lokal)
     achievements.ts Daftar prestasi dan hadiahnya
+    weather.ts   Kode cuaca, fase hari, warna cahaya, pembaca respons Open-Meteo
     state.ts     State awal dan migrasi simpanan
     save.ts      Simpan/muat dengan cadangan
   render/      Tampilan PixiJS
@@ -155,8 +175,9 @@ src/
     stage.ts     Strip, input mouse, keputusan kucing, mainan, camilan, hadiah, sosial
     effects.ts   Partikel (hati, bintang, not musik, debu, remah)
     ambient.ts   Kupu-kupu dan kunang-kunang
+    weatherFx.ts Hujan, genangan, awan, kabut, salju, daun, kilat, bulan dan bintang
   ui/          HUD, panel, dialog (HTML + CSS); assistantUi.ts = tab Asisten dan kartu pesan
-  platform/    Jembatan ke Tauri dan klik tembus
+  platform/    Jembatan ke Tauri dan klik tembus; weatherService.ts = ambil cuaca dan cari kota
 src-tauri/
   src/lib.rs   Jendela, klik tembus, tray, deteksi layar penuh, file simpanan,
                penjadwal pengingat + notifikasi Windows, penyimpanan foto
@@ -187,4 +208,5 @@ $env:PREVIEW="C:\folder\tujuan"; npx vitest run tests/sprites.test.ts
 - Belum diuji di macOS. Di Linux, jendela transparan butuh compositor.
 - Integrasi Steam (achievement, Steam Cloud) belum ada; rencananya lewat crate `steamworks` di sisi Rust.
 - Reaksi terhadap ketikan/klik di aplikasi lain belum ada (butuh hook input global).
-- Musik belum ada; efek suara masih sintetis.
+- Efek suara dan musik masih sintetis (dibuat oleh kode, tanpa file audio).
+- Cuaca butuh internet. Tanpa koneksi, strip memakai jam komputer (terbit 06.00, terbenam 18.00) dan cuaca cerah.

@@ -10,7 +10,9 @@ import { formatFish } from "../core/format";
 import type { Game, GameEvent } from "../core/game";
 import type { CatState, FacilityId, GiftState } from "../core/types";
 import { FACILITY_IDS } from "../core/types";
-import { Ambient, isNight } from "./ambient";
+import { currentWeather, isDark, isWet, lightTint, precipitation, sunFor, type CurrentWeather, type DayPhase } from "../core/weather";
+import { Ambient } from "./ambient";
+import { WeatherFx } from "./weatherFx";
 import { CatActor, rand, type ActorHost, type SpotKind, type SpotRef } from "./catActor";
 import { Effects, TEXT_STYLE } from "./effects";
 import type { ObjectId } from "./pixelart";
@@ -30,7 +32,8 @@ export type StageSound =
   | "denied"
   | "alarm"
   | "chime"
-  | "shutter";
+  | "shutter"
+  | "thunder";
 
 export interface StageActions {
   pet(catId: string): void;
@@ -338,22 +341,31 @@ export class Stage implements ActorHost {
   private socials: Social[] = [];
   private lastZoomies = 0;
   private greetedVisitor = false;
-  private hour = new Date().getHours();
-  private hourTimer = 0;
+  /** Fase hari dan cuaca yang berlaku, diperbarui tiap detik. */
+  private phase: DayPhase = "siang";
+  private weather: CurrentWeather = { kind: "clear", code: null, temp: null, wind: 0, source: "none" };
+  private worldTimer = 0;
+  private tint = 0xffffff;
+  private light: [number, number, number] = [255, 255, 255];
+  readonly weatherFx = new WeatherFx();
 
   private constructor(app: Application, game: Game, actions: StageActions) {
     this.app = app;
     this.game = game;
     this.actions = actions;
     app.stage.addChild(
+      this.weatherFx.back,
       this.ambient.layer,
       this.facilityLayer,
+      this.weatherFx.ground,
       this.giftLayer,
       this.actorLayer,
       this.fx.layer,
+      this.weatherFx.front,
       this.toyLayer,
       this.labelLayer,
     );
+    this.weatherFx.onLightning = () => this.lightningStrike();
     this.actorLayer.sortableChildren = true;
     this.treatCursor.anchor.set(0.5);
     this.treatCursor.visible = false;
@@ -1175,6 +1187,142 @@ export class Stage implements ActorHost {
   }
 
   // -------------------------------------------------------------------------
+  // Cuaca dan waktu
+
+  private isNightNow(): boolean {
+    return isDark(this.phase);
+  }
+
+  /** Perbarui fase hari dan cuaca yang berlaku dari GameState. */
+  private refreshWorld(now: number): void {
+    const w = this.game.state.weather;
+    this.phase = this.game.phase(now);
+    this.weather = currentWeather(w, now);
+  }
+
+  /** Warna cahaya kucing dan fasilitas berpindah halus mengikuti waktu dan cuaca. */
+  private updateLighting(dt: number): void {
+    const w = this.game.state.weather;
+    const now = Date.now();
+    const target = w.enabled && w.tint ? lightTint(now, sunFor(now, w.last), this.weather.kind) : 0xffffff;
+    // Disimpan sebagai pecahan agar langkah kecil tidak hilang karena pembulatan.
+    const k = Math.min(1, dt * 0.8);
+    const c = this.light;
+    for (let i = 0; i < 3; i++) {
+      const goal = (target >> (16 - i * 8)) & 0xff;
+      const diff = goal - c[i];
+      c[i] = Math.abs(diff) < 0.6 ? goal : c[i] + diff * k;
+    }
+    const tint = (Math.round(c[0]) << 16) | (Math.round(c[1]) << 8) | Math.round(c[2]);
+    if (tint !== this.tint) {
+      this.tint = tint;
+      this.facilityLayer.tint = tint;
+      this.actorLayer.tint = tint;
+      this.giftLayer.tint = tint;
+    }
+  }
+
+  /** Ikon cuaca/waktu sekarang (untuk gelembung pikiran dan panel). */
+  weatherIcon(): ObjectId {
+    switch (this.weather.kind) {
+      case "storm":
+        return "stormIcon";
+      case "rain":
+      case "drizzle":
+        return "rainIcon";
+      case "snow":
+        return "snowIcon";
+      case "fog":
+        return "fogIcon";
+      case "cloudy":
+        return "cloudIcon";
+      case "partly":
+        return this.isNightNow() ? "cloudIcon" : "partlyIcon";
+      default:
+        return this.isNightNow() ? "moon" : "sun";
+    }
+  }
+
+  /** Teksture rak jendela mengikuti langit. */
+  private rakTexture(): ObjectId {
+    const w = this.game.state.weather;
+    if (!w.enabled) return "rak";
+    if (isWet(this.weather.kind) || this.weather.kind === "cloudy" || this.weather.kind === "fog" || this.weather.kind === "snow") {
+      return this.isNightNow() ? "rakNight" : "rakRain";
+    }
+    switch (this.phase) {
+      case "fajar":
+        return "rakDawn";
+      case "senja":
+        return "rakDusk";
+      case "malam":
+      case "dini":
+        return "rakNight";
+      default:
+        return "rak";
+    }
+  }
+
+  /** Cari tempat berteduh: masuk kardus, naik ke rak, atau ke bawah tiang garuk. */
+  private seekShelter(a: CatActor): void {
+    const s = this.pixelScale;
+    const box: SpotRef = { facility: "kardus", index: 0, kind: "box" };
+    if (this.facilities.has("kardus") && this.spotFree(box, a) && Math.random() < 0.6) {
+      this.facilityActivity(a, "kardus");
+      return;
+    }
+    if (this.facilities.has("rak") && Math.random() < 0.6 && this.facilityActivity(a, "rak")) return;
+    const tiang = this.facilities.get("tiang");
+    if (tiang) {
+      // Duduk di bawah platform tiang garuk, sesekali menjilati bulu yang basah.
+      a.walkTo(tiang.x + (a.x < tiang.x ? -4 : 4) * s, () => {
+        a.setMode(Math.random() < 0.5 ? "groom" : "sit", rand(6, 14));
+      });
+      return;
+    }
+    a.setMode("groom");
+  }
+
+  /** Kilat menyambar: kucing kaget, sebagian lari bersembunyi. */
+  private lightningStrike(): void {
+    if (this.focusMode) return;
+    if (this.game.state.weather.rainSound) window.setTimeout(() => this.actions.sound("thunder"), rand(300, 1400));
+    for (const a of this.freeCats()) {
+      if (a.spot) continue;
+      a.emote("exclaim", 0.9, false);
+      a.setMode("startled", 0.5, () => {
+        if (Math.random() < 0.6) this.seekShelter(a);
+        else a.setMode("sit", rand(2, 4));
+      });
+    }
+  }
+
+  /** Cuaca berganti: kucing bereaksi (berteduh saat mulai hujan, keluar saat reda). */
+  onWeatherChanged(to: string, react = true): void {
+    this.refreshWorld(Date.now());
+    if (this.focusMode || !react) return;
+    const wet = to === "rain" || to === "storm" || to === "drizzle";
+    for (const a of this.freeCats()) {
+      if (Math.random() < 0.5) continue;
+      a.emote(this.weatherIcon(), 2);
+      if (wet && !a.spot) this.seekShelter(a);
+    }
+  }
+
+  /** Sapaan pagi/siang/sore/malam: seekor kucing datang dengan ikon cuaca. */
+  greet(): void {
+    this.refreshWorld(Date.now());
+    const free = this.freeCats();
+    const a = free[Math.floor(Math.random() * free.length)];
+    if (!a) return;
+    a.emote(this.weatherIcon(), 3);
+    if (this.phase === "pagi" || this.phase === "fajar") a.setMode("stretch", 2.5, () => a.setMode("happy", 1.5));
+    else if (this.phase === "malam") a.setMode("yawn", 2.7);
+    else a.setMode("happy", 2);
+    this.actions.sound("meow");
+  }
+
+  // -------------------------------------------------------------------------
   // Asisten: kucing pembawa pesan
 
   /** Kucing yang sedang membawa pesan, dengan waktu mulai dan bunyi berikutnya. */
@@ -1359,7 +1507,7 @@ export class Stage implements ActorHost {
     ctx.imageSmoothingEnabled = false;
     ctx.fillStyle = "#fff8ec";
     ctx.fillRect(0, 0, out.width, out.height);
-    const night = isNight(this.hour);
+    const night = this.isNightNow();
     const sky = ctx.createLinearGradient(0, pad, 0, pad + h);
     sky.addColorStop(0, night ? "#1d2346" : "#9cc6e4");
     sky.addColorStop(1, night ? "#3b3f6e" : "#e3eef4");
@@ -1508,22 +1656,32 @@ export class Stage implements ActorHost {
     }
     const now = Date.now();
     const focus = this.focusMode;
-    const night = isNight(this.hour);
+    const night = this.isNightNow();
+    const wet = isWet(this.weather.kind);
+    const phase = this.phase;
+    const hot = this.weather.temp !== null && this.weather.temp >= 31 && (phase === "siang" || phase === "sore");
     if (this.facilities.has("mangkuk") && cat.hunger < 0.5 && Math.random() < 0.7) {
       this.goEat(a);
       return;
     }
     const home = cat.facility && this.facilities.has(cat.facility) ? cat.facility : null;
     const owned = FACILITY_IDS.filter((id) => this.facilities.has(id));
+    // Kucing aktif saat fajar dan senja (crepuscular), mengantuk saat malam dan siang terik,
+    // dan mencari tempat berteduh saat hujan.
+    const dawn = phase === "fajar" || phase === "pagi";
+    const dusk = phase === "senja" || phase === "sore";
     const pick = pickWeighted({
-      home: home ? 32 : 0,
+      home: home ? (wet ? 10 : 32) : 0,
       explore: owned.length > 0 && !focus ? 7 : 0,
-      wander: focus ? 6 : 20,
+      shelter: wet && owned.some((id) => id === "kardus" || id === "rak" || id === "tiang") ? 30 : 0,
+      wander: focus ? 6 : wet ? 4 : 20,
       sit: 16,
-      groom: 9,
-      sleep: focus ? 40 : night ? 28 : 9,
+      groom: wet ? 14 : 9,
+      sleep: focus ? 40 : night ? 28 : hot ? 22 : wet ? 16 : 9,
       idle: 7,
-      zoomies: !focus && !night && now - this.lastZoomies > 45_000 ? 2.5 : 0,
+      stretch: dawn && !focus ? 7 : 2,
+      yawn: night || phase === "dini" || dawn ? 4 : 1,
+      zoomies: !focus && !night && !wet && now - this.lastZoomies > (dusk ? 20_000 : 45_000) ? (dusk ? 7 : dawn ? 4 : 2.5) : 0,
       think: focus ? 0 : 6,
       visit: !focus && heartCount(cat) >= 2 && this.cursor ? 3 : 0,
     });
@@ -1542,6 +1700,9 @@ export class Stage implements ActorHost {
       }
       case "zoomies":
         this.zoomies(a);
+        break;
+      case "shelter":
+        this.seekShelter(a);
         break;
       case "think":
         a.setMode("sit", rand(3, 6));
@@ -1565,7 +1726,12 @@ export class Stage implements ActorHost {
 
   private thought(cat: CatState): ObjectId {
     if (cat.hunger < 0.6) return "fish";
-    if (isNight(this.hour) && Math.random() < 0.5) return "zzz";
+    if (this.isNightNow() && Math.random() < 0.5) return "zzz";
+    if (Math.random() < 0.35) {
+      // Memikirkan cuaca.
+      const icon = this.weatherIcon();
+      if (icon !== "sun" || !this.isNightNow()) return icon;
+    }
     const options: ObjectId[] = ["note", "question", "leaf", "star", "feather"];
     if (heartCount(cat) >= 2) options.push("heart", "heart");
     return options[Math.floor(Math.random() * options.length)];
@@ -2047,10 +2213,11 @@ export class Stage implements ActorHost {
       .filter((o) => o !== a && Math.abs(o.x - a.x) < 320 * s)
       .sort((p, q) => Math.abs(p.x - a.x) - Math.abs(q.x - a.x))[0];
     if (!b2) return;
-    const night = isNight(this.hour);
+    const night = this.isNightNow();
+    const chilly = isWet(this.weather.kind) || (this.weather.temp !== null && this.weather.temp <= 20);
     const type = this.focusMode
       ? "cuddle"
-      : pickWeighted<SocialType>({ boop: 40, groom: 25, playfight: night ? 5 : 20, cuddle: night ? 40 : 12 });
+      : pickWeighted<SocialType>({ boop: 40, groom: 25, playfight: night ? 5 : 20, cuddle: night ? 40 : chilly ? 35 : 12 });
     this.startSocial(a, b2, type);
   }
 
@@ -2328,6 +2495,10 @@ export class Stage implements ActorHost {
       }
       if (glowOn) view.glow.alpha = 0.65 + 0.35 * Math.sin(now / 120);
 
+      if (view.id === "rak") {
+        const tex = objectTexture(this.rakTexture());
+        if (view.sprite.texture !== tex) view.sprite.texture = tex;
+      }
       let offset = 0;
       if (view.id === "benang") {
         const playing = this.residents().some((a) => a.mode === "play" && Math.abs(a.x - view.x) < 30 * s);
@@ -2399,11 +2570,12 @@ export class Stage implements ActorHost {
   private update(dt: number): void {
     const now = Date.now();
     const state = this.game.state;
-    this.hourTimer -= dt;
-    if (this.hourTimer <= 0) {
-      this.hourTimer = 30;
-      this.hour = new Date().getHours();
+    this.worldTimer -= dt;
+    if (this.worldTimer <= 0) {
+      this.worldTimer = 1;
+      this.refreshWorld(now);
     }
+    this.updateLighting(dt);
 
     this.updateCursorEffects(dt, now);
     this.updateToy(dt);
@@ -2421,6 +2593,7 @@ export class Stage implements ActorHost {
         actor.accessory = cat.accessory;
         actor.setNeed(isHungry(cat) && actor.mode !== "sleep" && actor.mode !== "eat" ? "fish" : null);
       }
+      actor.rainy = this.weatherFx.wet;
       if (actor.needsDecision) this.decide(actor);
       actor.update(dt, now);
     }
@@ -2432,6 +2605,7 @@ export class Stage implements ActorHost {
       const fed = state.visitor?.fed ?? 0;
       v.setNeed(v.mode === "wait" && fed < 3 ? "fish" : null);
       v.setDots(v.mode === "wait" || v.mode === "happy" ? fed : null);
+      v.rainy = this.weatherFx.wet;
       if (v.needsDecision) this.decide(v);
       v.update(dt, now);
     }
@@ -2457,7 +2631,20 @@ export class Stage implements ActorHost {
       maxX,
       width: this.width,
       focus: this.focusMode,
-      hour: this.hour,
+      night: this.isNightNow() && !isWet(this.weather.kind) && this.weather.kind !== "snow",
+      butterflies: (this.phase === "pagi" || this.phase === "siang" || this.phase === "sore") && (this.weather.kind === "clear" || this.weather.kind === "partly"),
+    });
+    this.weatherFx.update(dt, {
+      kind: this.weather.kind,
+      intensity: precipitation(this.weather.kind, this.weather.code),
+      wind: this.weather.wind,
+      phase: this.phase,
+      scale: this.pixelScale,
+      width: this.width,
+      groundY: this.groundY,
+      minX,
+      maxX,
+      calm: this.focusMode,
     });
     this.fx.update(dt);
     this.updateHover();

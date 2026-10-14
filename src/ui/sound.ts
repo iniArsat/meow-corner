@@ -32,6 +32,7 @@ export function configureSound(on: boolean, vol: number): void {
   volume = Math.min(1, Math.max(0, vol));
   if (master && ctx) master.gain.setTargetAtTime(volume, ctx.currentTime, 0.05);
   applyMusic();
+  applyRain();
 }
 
 /** Browser biasa baru mengizinkan suara setelah interaksi pertama. */
@@ -199,7 +200,8 @@ export type SoundId =
   | "alarm"
   | "chime"
   | "shutter"
-  | "achievement";
+  | "achievement"
+  | "thunder";
 
 /** Jeda minimal antar-bunyi yang sama, agar klik beruntun tidak jadi bising. */
 const MIN_GAP_MS: Partial<Record<SoundId, number>> = { meow: 350, pet: 120, purr: 900, pop: 50, chirp: 120, crunch: 200 };
@@ -269,6 +271,11 @@ export function playSound(id: SoundId): void {
     case "shutter":
       hiss(0.05, "highpass", 4000, 0.08);
       hiss(0.07, "bandpass", 2200, 0.06, 0.09);
+      break;
+    case "thunder":
+      // Gemuruh: derau rendah yang panjang dengan getaran pelan.
+      hiss(2.8, "lowpass", 150, 0.32, 0, 7);
+      hiss(0.35, "lowpass", 600, 0.12);
       break;
     case "achievement":
       tone([523, 659], 0.12, "triangle", 0.045);
@@ -382,4 +389,62 @@ export function setMusic(on: boolean): void {
 export function setMusicPaused(paused: boolean): void {
   musicPaused = paused;
   applyMusic();
+}
+
+// ---------------------------------------------------------------------------
+// Suara hujan: derau berfilter yang terus berputar, kerasnya mengikuti hujan.
+
+let rain: { src: AudioBufferSourceNode; gain: GainNode; nodes: AudioNode[] } | null = null;
+let rainLevel = 0;
+let rainPaused = false;
+
+function applyRain(): void {
+  const level = enabled && !rainPaused ? rainLevel : 0;
+  if (level <= 0) {
+    if (rain && ctx) {
+      const r = rain;
+      r.gain.gain.setTargetAtTime(0, ctx.currentTime, 0.6);
+      window.setTimeout(() => {
+        try {
+          r.src.stop();
+        } catch {
+          // Sudah berhenti.
+        }
+        r.nodes.forEach((n) => n.disconnect());
+      }, 3000);
+      rain = null;
+    }
+    return;
+  }
+  const a = audio();
+  if (!a) return;
+  if (!rain) {
+    const src = a.createBufferSource();
+    src.buffer = noise(a);
+    src.loop = true;
+    const hp = a.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 500;
+    const lp = a.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 3200;
+    const gain = a.createGain();
+    gain.gain.value = 0;
+    src.connect(hp).connect(lp).connect(gain).connect(out());
+    src.start();
+    rain = { src, gain, nodes: [src, hp, lp, gain] };
+  }
+  rain.gain.gain.setTargetAtTime(0.05 + level * 0.09, a.currentTime, 1.2);
+}
+
+/** Kekuatan suara hujan 0..1 (0 = diam). */
+export function setRainSound(level: number): void {
+  rainLevel = Math.max(0, Math.min(1, level));
+  applyRain();
+}
+
+/** Suara hujan berhenti saat strip disembunyikan. */
+export function setRainPaused(paused: boolean): void {
+  rainPaused = paused;
+  applyRain();
 }

@@ -2,6 +2,7 @@
 
 import { ACHIEVEMENT_BY_ID } from "./achievements";
 import { defaultAssistant, migrateAssistant } from "./assistant";
+import { defaultWeather, migrateWeather } from "./weather";
 import { ACCESSORY_BY_ID, BALANCE, COAT_BY_ID, TRAIT_IDS, UPGRADE_BY_ID } from "./data";
 import type {
   CatState,
@@ -20,8 +21,9 @@ import { FACILITY_IDS } from "./types";
 /**
  * v1: rilis pertama. v2: ikatan, aksesori, camilan, hadiah. v3: asisten, prestasi,
  * hadiah harian. v4: suara menyala bawaan, volume, musik, ukuran panel bawah.
+ * v5: cuaca dan waktu.
  */
-export const SAVE_VERSION = 4;
+export const SAVE_VERSION = 5;
 
 const MINUTE = 60_000;
 
@@ -102,6 +104,7 @@ export function createInitialState(now: number): GameState {
     assistant: defaultAssistant(now),
     achievements: [],
     daily: { lastDate: "", streak: 0, best: 0 },
+    weather: defaultWeather(),
   };
 }
 
@@ -318,5 +321,6 @@ export function migrateState(raw: unknown, now: number): GameState | null {
       ? [...new Set(raw.achievements.filter((a): a is string => typeof a === "string" && !!ACHIEVEMENT_BY_ID[a]))]
       : [],
     daily,
+    weather: migrateWeather(raw.weather),
   };
 }

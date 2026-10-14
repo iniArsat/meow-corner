@@ -45,6 +45,7 @@ import {
   type DueItem,
 } from "./assistant";
 import { createInitialState } from "./state";
+import { currentWeather, dayPhase, greetKey, sunFor, type DayPhase } from "./weather";
 import type {
   AssistantState,
   CatState,
@@ -57,6 +58,10 @@ import type {
   Repeat,
   Todo,
   UpgradeDef,
+  WeatherKind,
+  WeatherPlace,
+  WeatherSnapshot,
+  WeatherState,
   WellnessKind,
 } from "./types";
 import { FACILITY_IDS } from "./types";
@@ -90,7 +95,15 @@ export type GameEvent =
   | { type: "alert"; alert: Alert }
   | { type: "achievement"; ids: string[] }
   | { type: "daily"; streak: number; catId: string }
-  | { type: "todoDone"; todoId: string; reward: number };
+  | { type: "todoDone"; todoId: string; reward: number }
+  | { type: "weather" }
+  /**
+   * Jenis cuaca yang berlaku berubah. `reason`: "live" bila cuaca sungguhan berganti
+   * (hujan mulai/reda), "manual" bila pemain memilih cuaca, "other" untuk sekadar
+   * data pertama/lokasi baru/efek dinyalakan (tanpa pengumuman).
+   */
+  | { type: "weatherChanged"; from: WeatherKind; to: WeatherKind; reason: "live" | "manual" | "other" }
+  | { type: "greeting"; phase: DayPhase };
 
 type Listener = (e: GameEvent) => void;
 
@@ -1095,6 +1108,62 @@ export class Game {
 
   recordPhoto(): void {
     this.state.stats.photos += 1;
+  }
+
+  // -------------------------------------------------------------------------
+  // Cuaca dan waktu (v5)
+
+  /** Ubah keadaan cuaca, lalu kabari bila jenis cuaca yang berlaku berubah. */
+  private changeWeather(now: number, apply: (w: WeatherState) => void): void {
+    const w = this.state.weather;
+    const before = currentWeather(w, now);
+    apply(w);
+    const after = currentWeather(w, now);
+    this.emit({ type: "weather" });
+    if (before.kind !== after.kind) {
+      const reason = before.source === "live" && after.source === "live" ? "live" : after.source === "manual" ? "manual" : "other";
+      this.emit({ type: "weatherChanged", from: before.kind, to: after.kind, reason });
+    }
+  }
+
+  setWeatherPlace(place: WeatherPlace | null, now: number): void {
+    this.changeWeather(now, (w) => {
+      w.place = place;
+      // Lokasi baru: data lama tidak berlaku lagi.
+      w.last = null;
+    });
+  }
+
+  setWeatherSnapshot(snapshot: WeatherSnapshot, now: number): void {
+    this.changeWeather(now, (w) => {
+      w.last = snapshot;
+    });
+  }
+
+  updateWeather(patch: Partial<Pick<WeatherState, "enabled" | "mode" | "tint" | "rainSound" | "greet">>, now: number): void {
+    this.changeWeather(now, (w) => Object.assign(w, patch));
+  }
+
+  /** Fase hari sekarang (memakai jam matahari kota pilihan bila ada). */
+  phase(now: number): DayPhase {
+    return dayPhase(now, sunFor(now, this.state.weather.last));
+  }
+
+  /**
+   * Sapaan "Selamat pagi/siang/sore/malam", sekali per fase per hari.
+   * Mengembalikan fase yang disapa, atau null.
+   */
+  checkGreeting(now: number): DayPhase | null {
+    const w = this.state.weather;
+    if (!w.greet) return null;
+    const p = this.phase(now);
+    const phase: DayPhase | null = p === "pagi" || p === "fajar" ? "pagi" : p === "siang" ? "siang" : p === "sore" || p === "senja" ? "sore" : p === "malam" ? "malam" : null;
+    if (!phase) return null;
+    const key = greetKey(now, phase, w.last?.utcOffset ?? null);
+    if (w.greeted === key) return null;
+    w.greeted = key;
+    this.emit({ type: "greeting", phase });
+    return phase;
   }
 
   // -------------------------------------------------------------------------

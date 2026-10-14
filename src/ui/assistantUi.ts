@@ -1,5 +1,5 @@
-// UI asisten: tab Asisten (pengingat, fokus, tugas, sehat) dan kartu pesan
-// yang dibawa kucing saat pengingat berbunyi.
+// UI asisten: tab Asisten (pengingat, fokus, tugas, sehat, cuaca) dan kartu
+// pesan yang dibawa kucing saat pengingat berbunyi.
 
 import {
   BREAK_CHOICES,
@@ -22,7 +22,8 @@ import {
 } from "../core/assistant";
 import { formatFish } from "../core/format";
 import type { Game } from "../core/game";
-import type { Repeat, WellnessKind } from "../core/types";
+import type { Repeat, WeatherKind, WeatherPlace, WellnessKind } from "../core/types";
+import { PHASE_LABEL, WEATHER_KINDS, WEATHER_LABEL, cityClock, currentWeather, placeLabel, sunFor } from "../core/weather";
 import type { ObjectId } from "../render/pixelart";
 import { objectImageUrl } from "../render/textures";
 import { h } from "./dom";
@@ -39,15 +40,26 @@ export interface AssistantHost {
   catPosition(catId: string): { x: number; y: number } | null;
   /** Pesan selesai: kucing pembawa pesan boleh kembali beraktivitas. */
   alertDone(catId: string | null, key: string): void;
+  weather: WeatherHost;
 }
 
-type SubTab = "pengingat" | "fokus" | "tugas" | "sehat";
+/** Layanan cuaca dari main (jaringan) dan Stage (ikon). */
+export interface WeatherHost {
+  /** Ambil data terbaru; mengembalikan pesan galat atau null bila berhasil. */
+  refresh(): Promise<string | null>;
+  search(name: string): Promise<WeatherPlace[]>;
+  detect(): Promise<WeatherPlace | null>;
+  icon(): ObjectId;
+}
+
+export type SubTab = "pengingat" | "fokus" | "tugas" | "sehat" | "cuaca";
 
 const SUBTABS: { id: SubTab; label: string; icon: ObjectId }[] = [
   { id: "pengingat", label: "Pengingat", icon: "bell" },
   { id: "fokus", label: "Fokus", icon: "tomato" },
   { id: "tugas", label: "Tugas", icon: "star" },
   { id: "sehat", label: "Sehat", icon: "water" },
+  { id: "cuaca", label: "Cuaca", icon: "partlyIcon" },
 ];
 
 const ALERT_ICON: Record<AlertKind, ObjectId> = {
@@ -309,7 +321,204 @@ export class AssistantUi {
       case "sehat":
         this.renderWellness(body);
         break;
+      case "cuaca":
+        this.renderWeather(body, now);
+        break;
     }
+  }
+
+  /** Pindah ke sub-tab; true bila sebelumnya berada di sub-tab lain. */
+  openSub(sub: SubTab): boolean {
+    const changed = this.sub !== sub;
+    this.sub = sub;
+    return changed;
+  }
+
+  // -------------------------------------------------------------------------
+  // Cuaca
+
+  private weatherQuery = "";
+  private weatherResults: WeatherPlace[] | null = null;
+  private weatherStatus = "";
+  /** Jumlah tugas cuaca yang sedang berjalan, dan nomor tugas terakhir (pemilik baris status). */
+  private weatherRunning = 0;
+  private weatherSeq = 0;
+
+  private get weatherBusy(): boolean {
+    return this.weatherRunning > 0;
+  }
+
+  /**
+   * Jalankan tugas jaringan dengan baris status. Tugas `exclusive` diabaikan bila ada
+   * tugas lain yang berjalan (mencegah klik ganda); mengambil cuaca untuk kota yang
+   * baru dipilih selalu dijalankan.
+   */
+  private async weatherTask(label: string, task: () => Promise<string | null>, exclusive = true): Promise<void> {
+    if (exclusive && this.weatherBusy) return;
+    const seq = ++this.weatherSeq;
+    this.weatherRunning++;
+    this.weatherStatus = label;
+    this.host.rerender();
+    let status = "";
+    try {
+      status = (await task()) ?? "";
+    } catch (err) {
+      status = err instanceof Error ? err.message : String(err);
+    } finally {
+      this.weatherRunning--;
+      // Hanya tugas terakhir yang menentukan isi baris status.
+      if (seq === this.weatherSeq) this.weatherStatus = status;
+      this.host.rerender();
+    }
+  }
+
+  private choosePlace(place: WeatherPlace): void {
+    this.game.setWeatherPlace(place, Date.now());
+    this.weatherResults = null;
+    this.weatherQuery = "";
+    this.host.sound("pop");
+    void this.weatherTask("Mengambil cuaca…", () => this.host.weather.refresh(), false);
+  }
+
+  private renderWeather(body: HTMLElement, now: number): void {
+    const w = this.game.state.weather;
+    const cw = currentWeather(w, now);
+    const phase = this.game.phase(now);
+    const sun = sunFor(now, w.last);
+    const live = cw.source === "live" && w.last;
+
+    let title: string;
+    if (!w.enabled) title = "Efek cuaca mati";
+    else if (cw.source === "manual") title = `${WEATHER_LABEL[cw.kind]} (pilihanmu)`;
+    else if (live) title = WEATHER_LABEL[cw.kind];
+    else title = w.place ? "Menunggu data cuaca…" : "Pilih kotamu";
+    const temp = live && w.last ? `${Math.round(w.last.temp)}°` : "";
+
+    const card = h(
+      "div",
+      { class: `weather-card phase-${phase}` },
+      h("img", { class: "px weather-icon", src: objectImageUrl(this.host.weather.icon(), 4), alt: "" }),
+      h(
+        "div",
+        { class: "info" },
+        h("div", { class: "weather-title" }, title, temp ? h("span", { class: "weather-temp" }, temp) : null),
+        h(
+          "div",
+          { class: "desc" },
+          `${w.place ? `${w.place.name} · ` : ""}${PHASE_LABEL[phase]} · terbit ${cityClock(sun.sunrise, sun.utcOffset)} · terbenam ${cityClock(sun.sunset, sun.utcOffset)}`,
+        ),
+        live && w.last
+          ? h(
+              "div",
+              { class: "desc" },
+              `Terasa ${Math.round(w.last.feels)}° · lembap ${Math.round(w.last.humidity)}% · angin ${Math.round(w.last.wind)} km/j · diperbarui ${Math.max(0, Math.round((now - w.last.fetchedAt) / 60_000))} menit lalu`,
+            )
+          : null,
+      ),
+    );
+    body.append(card);
+    if (this.weatherStatus) body.append(h("p", { class: "desc status" }, this.weatherStatus));
+
+    // Lokasi
+    const search = () => {
+      const q = this.weatherQuery.trim();
+      if (q.length < 2) return;
+      void this.weatherTask("Mencari…", async () => {
+        const results = await this.host.weather.search(q);
+        this.weatherResults = results;
+        return results.length === 0 ? `Kota “${q}” tidak ditemukan.` : null;
+      });
+    };
+    body.append(
+      h("h3", null, "Lokasi"),
+      h("p", { class: "desc" }, w.place ? `Sekarang: ${placeLabel(w.place)}` : "Belum ada kota. Cari kotamu atau deteksi otomatis."),
+      h(
+        "div",
+        { class: "form-card" },
+        h(
+          "div",
+          { class: "form-row" },
+          h("input", {
+            class: "field-input grow",
+            placeholder: "Nama kota, misalnya Bandung",
+            value: this.weatherQuery,
+            oninput: (e: Event) => (this.weatherQuery = (e.target as HTMLInputElement).value),
+            onkeydown: (e: KeyboardEvent) => {
+              e.stopPropagation();
+              if (e.key === "Enter") search();
+            },
+          }),
+          h("button", { class: "btn btn-primary", disabled: this.weatherBusy, onclick: search }, "Cari"),
+        ),
+        h(
+          "div",
+          { class: "form-row" },
+          h(
+            "button",
+            {
+              class: "btn small",
+              disabled: this.weatherBusy,
+              title: "Perkiraan lokasi dari alamat internet (GeoJS)",
+              onclick: () =>
+                void this.weatherTask("Mendeteksi lokasi…", async () => {
+                  const place = await this.host.weather.detect();
+                  if (!place) return "Lokasi tidak bisa dideteksi. Cari kotamu secara manual.";
+                  this.choosePlace(place);
+                  return null;
+                }),
+            },
+            "Deteksi otomatis",
+          ),
+          w.place
+            ? h(
+                "button",
+                {
+                  class: "btn small",
+                  disabled: this.weatherBusy,
+                  onclick: () => void this.weatherTask("Mengambil cuaca…", () => this.host.weather.refresh()),
+                },
+                "Perbarui cuaca",
+              )
+            : null,
+        ),
+      ),
+    );
+    if (this.weatherResults && this.weatherResults.length > 0) {
+      const list = h("div", { class: "place-list" });
+      for (const p of this.weatherResults) {
+        list.append(h("button", { class: "place", onclick: () => this.choosePlace(p) }, h("b", null, p.name), h("span", null, [p.region, p.country].filter(Boolean).join(", "))));
+      }
+      body.append(list);
+    }
+
+    // Mode dan pilihan
+    const mode = h("select", {
+      class: "field-input",
+      onchange: (e: Event) => {
+        const v = (e.target as HTMLSelectElement).value;
+        this.game.updateWeather({ mode: v === "auto" ? "auto" : (v as WeatherKind) }, Date.now());
+        (e.target as HTMLSelectElement).blur();
+        this.host.rerender();
+      },
+    });
+    mode.append(h("option", { value: "auto", selected: w.mode === "auto" }, "Ikuti cuaca sungguhan"));
+    for (const k of WEATHER_KINDS) mode.append(h("option", { value: k, selected: w.mode === k }, `Selalu ${WEATHER_LABEL[k].toLowerCase()}`));
+    const toggle = (label: string, value: boolean, onChange: (v: boolean) => void) =>
+      h(
+        "label",
+        { class: "setting toggle" },
+        h("span", null, label),
+        h("input", { type: "checkbox", checked: value, onchange: (e: Event) => onChange((e.target as HTMLInputElement).checked) }),
+      );
+    body.append(
+      h("h3", null, "Tampilan"),
+      h("div", { class: "setting" }, h("span", null, "Cuaca di strip"), mode),
+      toggle("Efek cuaca (hujan, awan, kabut, petir)", w.enabled, (v) => this.game.updateWeather({ enabled: v }, Date.now())),
+      toggle("Warna cahaya siang–malam pada kucing", w.tint, (v) => this.game.updateWeather({ tint: v }, Date.now())),
+      toggle("Suara hujan dan guruh", w.rainSound, (v) => this.game.updateWeather({ rainSound: v }, Date.now())),
+      toggle("Kucing menyapa pagi, siang, sore, malam", w.greet, (v) => this.game.updateWeather({ greet: v }, Date.now())),
+      h("p", { class: "desc help" }, "Data cuaca dari Open-Meteo.com (gratis, tanpa akun), diperbarui tiap 20 menit. Deteksi otomatis memakai GeoJS dan hanya berjalan saat tombolnya ditekan."),
+    );
   }
 
   private renderReminders(body: HTMLElement, now: number): void {
