@@ -8,6 +8,16 @@ Game idle kucing yang tinggal di strip bawah layar desktop. Kucing-kucing berjal
 
 Buka halaman **[Releases](https://github.com/iniArsat/meow-corner/releases/latest)**, unduh file yang berakhiran `-setup.exe`, lalu klik dua kali untuk memasang. Installer dibuat otomatis oleh GitHub Actions setiap ada perubahan di branch `main`.
 
+## Baru di versi 0.7: tampilan baru
+
+- **Panel kanan dirombak.** Panelnya lebih lebar, dan tab pindah ke rel kardus di kiri (Toko, Kucing, Asisten, Koleksi, Rumah, Atur), jadi isinya mendapat tinggi penuh. Judul panel menampilkan keterangan singkat, misalnya jumlah ikan di Toko atau pengingat berikutnya di Asisten.
+- **Tab Kucing ringkas.** Setiap kucing jadi satu baris dengan potret, hati, rasa lapar, sumbangan produksi, tugas, aksesori, dan tombol Ngobrol/Panggil/Lepas. 3–4 kucing terlihat sekaligus.
+- **Sub-bagian satu baris** di Asisten, Koleksi (Prestasi, Kucingpedia, Aksesori, Foto), dan Atur (Umum, Obrolan & ketik, Bantuan, Aplikasi). Baris ini tetap terlihat saat isinya digulir.
+- **Panel bawah lebih tenang.** Tombol alat tanpa bingkai dan dikelompokkan, hanya Beri makan, Toko, dan Kucing yang menonjol. Ikon suara kini berupa not musik.
+- **Huruf pixel Tiny5** untuk judul dan angka besar (jumlah ikan, timer fokus, Bintang). Harga selalu berwarna biru ikan.
+- Pengaturan memakai **sakelar geser**, statistik tampil sebagai kotak angka, dan kartu Bintang di tab Rumah punya bilah kemajuan.
+- **Notifikasi lebih kecil** dan pindah ke samping atas panel saat panel terbuka, jadi tidak lagi menutupi kucing.
+
 ## Baru di versi 0.6: ngobrol dengan kucing dan kucing ikut mengetik
 
 **Ngobrol dengan kucing.** Klik kanan seekor kucing (atau tombol **Ngobrol** di panel Kucing). Gelembung kata muncul di atas kepalanya, kucing "berbicara" huruf demi huruf sambil menggerakkan mulut, lalu kamu memilih jawaban.
@@ -193,7 +203,7 @@ src/
     ambient.ts   Kupu-kupu dan kunang-kunang
     weatherFx.ts Hujan, genangan, awan, kabut, salju, daun, kilat, bulan dan bintang
   ui/          HUD, panel, dialog (HTML + CSS); assistantUi.ts = tab Asisten dan kartu pesan;
-               chatUi.ts = gelembung obrolan dan celoteh
+               chatUi.ts = gelembung obrolan dan celoteh; widgets.ts = harga, tombol beli, segmen
   platform/    Jembatan ke Tauri dan klik tembus; weatherService.ts = ambil cuaca dan cari kota
 src-tauri/
   src/lib.rs   Jendela, klik tembus, tray, deteksi layar penuh, file simpanan,

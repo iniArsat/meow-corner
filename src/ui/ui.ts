@@ -20,6 +20,7 @@ import { FACILITY_IDS } from "../core/types";
 import type { ObjectId } from "../render/pixelart";
 import { catImageUrl, objectImageUrl, silhouetteUrl } from "../render/textures";
 import { AssistantUi, type WeatherHost } from "./assistantUi";
+import { buyButton, price, segmented } from "./widgets";
 import { PHASE_LABEL, WEATHER_LABEL, currentWeather, isWet } from "../core/weather";
 import { clear, h } from "./dom";
 import type { SoundId } from "./sound";
@@ -31,21 +32,24 @@ const SHORT_NAME: Record<FacilityId, string> = {
   kardus: "Kardus",
   tiang: "Tiang",
   akuarium: "Akuarium",
-  rak: "Rak jendela",
+  rak: "Rak",
 };
 
 const TIPS_KEY = "meow-corner.tips";
 
 export type TabId = "toko" | "kucing" | "asisten" | "koleksi" | "rumah" | "atur";
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: "toko", label: "Toko" },
-  { id: "kucing", label: "Kucing" },
-  { id: "asisten", label: "Asisten" },
-  { id: "koleksi", label: "Koleksi" },
-  { id: "rumah", label: "Rumah" },
-  { id: "atur", label: "Atur" },
+const TABS: { id: TabId; label: string; icon: ObjectId }[] = [
+  { id: "toko", label: "Toko", icon: "bag" },
+  { id: "kucing", label: "Kucing", icon: "paw" },
+  { id: "asisten", label: "Asisten", icon: "bell" },
+  { id: "koleksi", label: "Koleksi", icon: "trophy" },
+  { id: "rumah", label: "Rumah", icon: "house" },
+  { id: "atur", label: "Atur", icon: "gear" },
 ];
+
+type CollectionSub = "prestasi" | "kucingpedia" | "aksesori" | "foto";
+type SettingsSub = "umum" | "kucing" | "bantuan" | "aplikasi";
 
 /** Mode interaksi strip yang dikendalikan dari HUD. */
 export interface Interactions {
@@ -88,6 +92,7 @@ export class Ui {
   private rateEl: HTMLElement;
   private feedBtn: HTMLButtonElement;
   private feedLabel: HTMLElement;
+  private feedPrice: HTMLElement;
   private shopBtn: HTMLButtonElement;
   private soundBtn: HTMLButtonElement;
   private soundIcon: HTMLImageElement;
@@ -101,7 +106,11 @@ export class Ui {
   private focusText: HTMLElement;
   readonly assistant: AssistantUi;
   private panel: HTMLElement | null = null;
+  private panelRail: HTMLElement | null = null;
+  private panelHead: HTMLElement | null = null;
   private panelBody: HTMLElement | null = null;
+  private collectionSub: CollectionSub = "prestasi";
+  private settingsSub: SettingsSub = "umum";
   private tab: TabId = "toko";
   private toasts: HTMLElement;
   private dialog: HTMLElement | null = null;
@@ -119,24 +128,21 @@ export class Ui {
   ) {
     this.fishEl = h("span", { class: "hud-fish" }, "0");
     this.rateEl = h("span", { class: "hud-rate" }, "0/dtk");
-    /** Tombol dengan ikon (mode ringkas) dan tulisan (mode lengkap). */
-    const iconLabel = (icon: ObjectId, label: string) => [
-      h("img", { class: "px ico", src: objectImageUrl(icon, 2), alt: "" }),
-      h("span", { class: "lbl" }, label),
-    ];
+    const icon = (id: ObjectId, alt = "") => h("img", { class: "px ico", src: objectImageUrl(id, 2), alt });
+    /** Tombol navigasi: ikon selalu, tulisan hanya di mode lengkap. */
+    const nav = (id: ObjectId, label: string, title: string, onclick: () => void) =>
+      h("button", { class: "btn nav", title, onclick }, icon(id), h("span", { class: "lbl" }, label));
+    const sep = () => h("span", { class: "hud-sep", "aria-hidden": "true" });
+
     this.feedLabel = h("span", { class: "lbl" }, "Beri makan");
-    this.feedBtn = h(
-      "button",
-      { class: "btn btn-feed", onclick: () => this.feedAll() },
-      h("img", { class: "px ico", src: objectImageUrl("mangkuk", 2), alt: "" }),
-      this.feedLabel,
-    );
-    this.shopBtn = h("button", { class: "btn btn-text", title: "Toko", onclick: () => this.togglePanel("toko") }, ...iconLabel("bag", "Toko"));
+    this.feedPrice = h("span", { class: "price" });
+    this.feedBtn = h("button", { class: "btn btn-feed", onclick: () => this.feedAll() }, icon("mangkuk"), this.feedLabel, this.feedPrice);
+    this.shopBtn = nav("bag", "Toko", "Toko: fasilitas, upgrade, camilan, aksesori", () => this.togglePanel("toko"));
     this.soundIcon = h("img", { class: "px", src: objectImageUrl("speaker", 2), alt: "Suara" });
     this.soundBtn = h(
       "button",
       {
-        class: "btn btn-icon btn-mode",
+        class: "tool",
         title: "Suara",
         onclick: () => {
           const on = !this.game.state.settings.sound;
@@ -148,30 +154,30 @@ export class Ui {
     );
     this.toyBtn = h(
       "button",
-      { class: "btn btn-icon btn-mode", title: "Mainan bulu: kucing mengejar kursormu", onclick: () => this.toggleToy() },
+      { class: "tool", title: "Mainan bulu: kucing mengejar kursormu (Esc untuk berhenti)", onclick: () => this.toggleToy() },
       h("img", { class: "px", src: objectImageUrl("feather", 2), alt: "Mainan" }),
     );
-    this.treatCount = h("span", { class: "mode-count" }, "0");
+    this.treatCount = h("span", { class: "tool-count" }, "0");
     this.treatBtn = h(
       "button",
-      { class: "btn btn-icon btn-mode", title: "Camilan: klik kucing untuk memberinya", onclick: () => this.toggleTreat() },
+      { class: "tool", title: "Camilan: klik kucing untuk memberinya", onclick: () => this.toggleTreat() },
       h("img", { class: "px", src: objectImageUrl("treat", 2), alt: "Camilan" }),
       this.treatCount,
     );
-    this.focusText = h("span", { class: "mode-count" }, "");
+    this.focusText = h("span", { class: "tool-count" }, "");
     this.focusChip = h(
       "button",
-      { class: "btn btn-mode focus-chip", title: "Timer fokus", onclick: () => this.openPanel("asisten") },
+      { class: "tool chip-focus", title: "Timer fokus", onclick: () => this.openPanel("asisten") },
       h("img", { class: "px", src: objectImageUrl("tomato", 2), alt: "" }),
       this.focusText,
     );
     this.focusChip.style.display = "none";
     this.weatherIcon = h("img", { class: "px", src: objectImageUrl("sun", 2), alt: "" });
-    this.weatherTemp = h("span", { class: "mode-count" }, "");
+    this.weatherTemp = h("span", { class: "tool-count" }, "");
     this.weatherChip = h(
       "button",
       {
-        class: "btn btn-mode weather-chip",
+        class: "tool chip-weather",
         title: "Cuaca dan waktu",
         onclick: () => {
           const switched = this.assistant.openSub("cuaca");
@@ -199,21 +205,23 @@ export class Ui {
         h("div", { class: "hud-numbers" }, this.fishEl, this.rateEl),
       ),
       this.feedBtn,
+      sep(),
       this.focusChip,
       this.weatherChip,
       this.toyBtn,
       this.treatBtn,
       h(
         "button",
-        { class: "btn btn-icon btn-mode", title: "Asisten: pengingat, fokus, tugas", onclick: () => this.togglePanel("asisten") },
+        { class: "tool", title: "Asisten: pengingat, fokus, tugas", onclick: () => this.togglePanel("asisten") },
         h("img", { class: "px", src: objectImageUrl("bell", 2), alt: "Asisten" }),
       ),
       this.soundBtn,
+      sep(),
       this.shopBtn,
-      h("button", { class: "btn btn-text", title: "Kucing", onclick: () => this.togglePanel("kucing") }, ...iconLabel("paw", "Kucing")),
-      h("button", { class: "btn btn-icon", title: "Menu lain", onclick: () => this.togglePanel("koleksi") }, "⋯"),
-      h("button", { class: "btn btn-icon hud-collapse", title: "Kecilkan panel", onclick: () => this.setCollapsed(true) }, "‹"),
-      h("button", { class: "btn btn-icon hud-expand", title: "Besarkan panel", onclick: () => this.setCollapsed(false) }, "›"),
+      nav("paw", "Kucing", "Kucing-kucingmu", () => this.togglePanel("kucing")),
+      h("button", { class: "btn nav more", title: "Koleksi, Rumah, Atur", onclick: () => this.togglePanel("koleksi") }, "⋯"),
+      h("button", { class: "tool hud-collapse", title: "Kecilkan panel", onclick: () => this.setCollapsed(true) }, "‹"),
+      h("button", { class: "tool hud-expand", title: "Besarkan panel", onclick: () => this.setCollapsed(false) }, "›"),
     );
     this.applyHudSettings();
     this.toasts = h("div", { class: "toasts" });
@@ -274,8 +282,9 @@ export class Ui {
     this.feedBtn.style.display = needs ? "" : "none";
     if (needs) {
       const cost = this.game.feedPrice(now);
-      this.feedLabel.textContent = `Beri makan · ${formatFish(cost)}`;
-      this.feedBtn.title = `Beri makan semua kucing · ${formatFish(cost)} ikan`;
+      const text = formatFish(cost);
+      if (this.feedPrice.textContent !== text) this.feedPrice.replaceChildren(price(cost));
+      this.feedBtn.title = `Beri makan semua kucing (${text} ikan)`;
       this.feedBtn.disabled = s.fish < cost;
     }
     // Saat diciutkan, titik merah menandakan kucing lapar.
@@ -368,8 +377,15 @@ export class Ui {
     this.tab = tab;
     this.highlight = highlight;
     if (!this.panel) {
+      this.panelRail = h("nav", { class: "rail", "aria-label": "Bagian panel" });
+      this.panelHead = h("div", { class: "panel-head" });
       this.panelBody = h("div", { class: "panel-body" });
-      this.panel = h("div", { class: "card panel", "data-hit": true }, h("div", { class: "tabs" }), this.panelBody);
+      this.panel = h(
+        "div",
+        { class: "card panel", "data-hit": true, role: "dialog", "aria-label": "Panel Meow Corner" },
+        this.panelRail,
+        h("div", { class: "panel-main" }, this.panelHead, this.panelBody),
+      );
       this.root.append(this.panel);
       this.root.classList.add("panel-open");
     }
@@ -383,6 +399,8 @@ export class Ui {
   closePanel(): void {
     this.panel?.remove();
     this.panel = null;
+    this.panelRail = null;
+    this.panelHead = null;
     this.panelBody = null;
     this.renamingCat = null;
     this.root.classList.remove("panel-open");
@@ -516,19 +534,36 @@ export class Ui {
   }
 
   private renderPanel(): void {
-    if (!this.panel || !this.panelBody) return;
-    const tabs = this.panel.querySelector(".tabs") as HTMLElement;
-    clear(tabs);
-    for (const t of TABS) {
-      tabs.append(
-        h("button", { class: `tab${t.id === this.tab ? " active" : ""}`, onclick: () => this.openPanel(t.id) }, t.label),
-      );
-    }
-    tabs.append(h("button", { class: "tab close", title: "Tutup", onclick: () => this.closePanel() }, "✕"));
+    if (!this.panel || !this.panelBody || !this.panelRail || !this.panelHead) return;
+    const now = Date.now();
+    this.panelRail.replaceChildren(
+      ...TABS.map((t) =>
+        h(
+          "button",
+          {
+            class: `rail-tab${t.id === this.tab ? " active" : ""}`,
+            "aria-current": t.id === this.tab ? "page" : undefined,
+            onclick: () => {
+              if (this.tab !== t.id) this.panelBody?.scrollTo({ top: 0 });
+              this.openPanel(t.id);
+            },
+          },
+          h("img", { class: "px", src: objectImageUrl(t.icon, 2), alt: "" }),
+          h("span", null, t.label),
+        ),
+      ),
+    );
+    const tab = TABS.find((t) => t.id === this.tab)!;
+    const head = this.panelHeader(now);
+    this.panelHead.replaceChildren(
+      h("div", { class: "panel-title" }, tab.label),
+      h("div", { class: "panel-context" }, head.context ?? ""),
+      h("div", { class: "panel-actions" }, ...(head.actions ?? [])),
+      h("button", { class: "panel-close", title: "Tutup (Esc)", "aria-label": "Tutup panel", onclick: () => this.closePanel() }, "✕"),
+    );
 
     const scroll = this.panelBody.scrollTop;
     clear(this.panelBody);
-    const now = Date.now();
     switch (this.tab) {
       case "toko":
         this.renderShop(this.panelBody, now);
@@ -552,13 +587,62 @@ export class Ui {
     this.panelBody.scrollTop = scroll;
   }
 
+  /** Keterangan singkat di samping judul panel, dan tombol utama tab itu. */
+  private panelHeader(now: number): { context?: Node | string; actions?: HTMLElement[] } {
+    const g = this.game;
+    const s = g.state;
+    switch (this.tab) {
+      case "toko":
+        return { context: h("span", { class: "head-fish" }, price(s.fish), " ikan") };
+      case "kucing": {
+        const anyHungry = s.cats.some((c) => c.hunger < 0.999);
+        const cost = g.feedPrice(now);
+        return {
+          context: `${s.cats.length} kucing`,
+          actions: [
+            h(
+              "button",
+              {
+                class: "btn btn-feed small",
+                disabled: !anyHungry || s.fish < cost,
+                title: anyHungry ? "Beri makan semua kucing" : "Semua kucing sudah kenyang",
+                onclick: () => this.feedAll(),
+              },
+              "Beri makan",
+              price(cost),
+            ),
+          ],
+        };
+      }
+      case "asisten":
+        return { context: this.assistant.headline(now) };
+      case "koleksi": {
+        const coats = new Set(s.cats.map((c) => c.coat)).size;
+        switch (this.collectionSub) {
+          case "kucingpedia":
+            return { context: `${coats} dari ${COATS.length} jenis kucing` };
+          case "aksesori":
+            return { context: `${s.inventory.accessories.length} dari ${ACCESSORIES.length} aksesori` };
+          case "foto":
+            return { context: `${s.stats.photos} foto` };
+          default:
+            return { context: `${s.achievements.length} dari ${ACHIEVEMENTS.length} prestasi` };
+        }
+      }
+      case "rumah":
+        return { context: h("span", { class: "head-stars" }, `★ ${s.stars} Bintang`) };
+      default:
+        return {};
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Tab Toko
 
   private renderShop(body: HTMLElement, now: number): void {
     const g = this.game;
     const s = g.state;
-    body.append(h("h3", null, "Fasilitas"));
+    body.append(h("h3", null, "Fasilitas", h("span", { class: "h3-note" }, "tempat kucing bekerja dan menghasilkan ikan")));
     let lockedShown = false;
     for (const id of FACILITY_IDS) {
       const def = FACILITIES[id];
@@ -570,7 +654,7 @@ export class Ui {
               "div",
               { class: "row locked" },
               h("div", { class: "thumb mystery" }, "?"),
-              h("div", { class: "info" }, h("div", { class: "name" }, "???"), h("div", { class: "desc" }, "Kumpulkan lebih banyak ikan untuk membuka.")),
+              h("div", { class: "info" }, h("div", { class: "name" }, "Fasilitas berikutnya"), h("div", { class: "desc" }, "Terbuka setelah kamu mengumpulkan lebih banyak ikan.")),
             ),
           );
         }
@@ -589,30 +673,20 @@ export class Ui {
           h(
             "div",
             { class: "info" },
-            h("div", { class: "name" }, def.name, owned > 0 ? h("span", { class: "owned" }, ` ×${owned}`) : null),
+            h("div", { class: "name" }, def.name, owned > 0 ? h("span", { class: "owned" }, `×${owned}`) : null),
             h(
               "div",
               { class: "desc" },
               owned > 0
-                ? `${formatRate(rate)} · kucing ${cats}/${BALANCE.slotsPerFacility}`
-                : `+${formatRate(def.baseRate)} per unit · menarik kucing ${RARITY_LABEL[def.attracts]}`,
+                ? `${formatRate(rate)}, ${cats} dari ${BALANCE.slotsPerFacility} kucing bekerja`
+                : `+${formatRate(def.baseRate)} per unit. Menarik kucing ${RARITY_LABEL[def.attracts]}.`,
             ),
           ),
           h(
             "div",
             { class: "buy" },
-            h(
-              "button",
-              { class: "btn btn-buy", disabled: s.fish < price1, onclick: () => this.buy(id, 1) },
-              h("span", null, "Beli"),
-              h("small", null, formatFish(price1)),
-            ),
-            h(
-              "button",
-              { class: "btn btn-buy small", disabled: s.fish < price10, onclick: () => this.buy(id, 10) },
-              h("span", null, "×10"),
-              h("small", null, formatFish(price10)),
-            ),
+            buyButton("Beli", price1, { disabled: s.fish < price1, onclick: () => this.buy(id, 1), primary: s.fish >= price1 }),
+            buyButton("×10", price10, { disabled: s.fish < price10, onclick: () => this.buy(id, 10) }),
           ),
         ),
       );
@@ -626,18 +700,9 @@ export class Ui {
           h(
             "div",
             { class: "row" },
-            h("div", { class: "thumb glyph" }, "★"),
+            h("img", { class: "px thumb small", src: objectImageUrl("star", 3), alt: "" }),
             h("div", { class: "info" }, h("div", { class: "name" }, u.name), h("div", { class: "desc" }, u.description)),
-            h(
-              "div",
-              { class: "buy" },
-              h(
-                "button",
-                { class: "btn btn-buy", disabled: s.fish < u.cost, onclick: () => this.buyUpgrade(u.id) },
-                h("span", null, "Beli"),
-                h("small", null, formatFish(u.cost)),
-              ),
-            ),
+            h("div", { class: "buy" }, buyButton("Beli", u.cost, { disabled: s.fish < u.cost, onclick: () => this.buyUpgrade(u.id) })),
           ),
         );
       }
@@ -651,28 +716,22 @@ export class Ui {
       h(
         "div",
         { class: "row" },
-        h("img", { class: "px thumb", src: objectImageUrl("fish", 2), alt: "" }),
+        h("img", { class: "px thumb small", src: objectImageUrl("fish", 3), alt: "" }),
         h(
           "div",
           { class: "info" },
           h("div", { class: "name" }, "Umpan ikan asin"),
-          h("div", { class: "desc" }, s.visitor ? "Sudah ada tamu di strip." : "Panggil seekor kucing liar sekarang."),
+          h("div", { class: "desc" }, s.visitor ? "Sudah ada tamu di strip. Klik dia untuk memberi makan." : "Panggil seekor kucing liar sekarang juga."),
         ),
         h(
           "div",
           { class: "buy" },
-          h(
-            "button",
-            {
-              class: "btn btn-buy",
-              disabled: !!s.visitor || s.fish < bait,
-              onclick: () => {
-                if (g.callVisitor(Date.now())) this.deps.sound("buy");
-              },
+          buyButton("Panggil", bait, {
+            disabled: !!s.visitor || s.fish < bait,
+            onclick: () => {
+              if (g.callVisitor(Date.now())) this.deps.sound("buy");
             },
-            h("span", null, "Panggil"),
-            h("small", null, formatFish(bait)),
-          ),
+          }),
         ),
       ),
     );
@@ -681,62 +740,42 @@ export class Ui {
   private renderGoodies(body: HTMLElement, now: number): void {
     const g = this.game;
     const s = g.state;
-    const price = g.treatPrice(now);
+    const cost = g.treatPrice(now);
     body.append(
-      h("h3", { "data-section": "camilan" }, "Camilan"),
+      h("h3", { "data-section": "camilan" }, "Camilan", h("span", { class: "h3-note" }, `kamu punya ${s.inventory.treats}`)),
       h(
         "div",
         { class: "row" },
-        h("img", { class: "px thumb", src: objectImageUrl("treat", 3), alt: "" }),
+        h("img", { class: "px thumb small", src: objectImageUrl("treat", 3), alt: "" }),
         h(
           "div",
           { class: "info" },
-          h("div", { class: "name" }, "Camilan ikan", h("span", { class: "owned" }, ` · punya ${s.inventory.treats}`)),
-          h("div", { class: "desc" }, `Tekan tombol camilan di bawah, lalu klik kucing. +${BALANCE.bondPerTreat} ikatan dan bikin kenyang.`),
+          h("div", { class: "name" }, "Camilan ikan"),
+          h("div", { class: "desc" }, `Tekan tombol camilan di panel bawah, lalu klik kucing. +${BALANCE.bondPerTreat} ikatan dan bikin kenyang.`),
         ),
         h(
           "div",
           { class: "buy" },
-          h(
-            "button",
-            { class: "btn btn-buy", disabled: s.fish < price, onclick: () => this.buyTreats(1) },
-            h("span", null, "Beli"),
-            h("small", null, formatFish(price)),
-          ),
-          h(
-            "button",
-            { class: "btn btn-buy small", disabled: s.fish < price * 5, onclick: () => this.buyTreats(5) },
-            h("span", null, "×5"),
-            h("small", null, formatFish(price * 5)),
-          ),
+          buyButton("Beli", cost, { disabled: s.fish < cost, onclick: () => this.buyTreats(1) }),
+          buyButton("×5", cost * 5, { disabled: s.fish < cost * 5, onclick: () => this.buyTreats(5) }),
         ),
       ),
     );
 
-    body.append(h("h3", null, "Aksesori"));
     const ownedCount = s.inventory.accessories.length;
-    if (ownedCount > 0) body.append(h("p", { class: "desc" }, `Kamu punya ${ownedCount} aksesori. Pakaikan lewat tab Kucing.`));
+    body.append(h("h3", null, "Aksesori", ownedCount > 0 ? h("span", { class: "h3-note" }, `kamu punya ${ownedCount}, pakaikan di tab Kucing`) : null));
     const model = [...s.cats].sort((a, b) => a.adoptedAt - b.adoptedAt)[0];
     // Tampilkan beberapa yang termurah dulu agar daftar tidak terlalu panjang.
     const forSale = ACCESSORIES.filter((a) => a.price !== null && !s.inventory.accessories.includes(a.id)).slice(0, 4);
     for (const acc of forSale) {
-      const cost = acc.price!;
+      const accCost = acc.price!;
       body.append(
         h(
           "div",
           { class: "row" },
           h("img", { class: "px thumb cat-thumb", src: catImageUrl(model?.coat ?? "oyen", "sit", 2, acc.id), alt: "" }),
           h("div", { class: "info" }, h("div", { class: "name" }, acc.name), h("div", { class: "desc" }, acc.description)),
-          h(
-            "div",
-            { class: "buy" },
-            h(
-              "button",
-              { class: "btn btn-buy", disabled: s.fish < cost, onclick: () => this.buyAccessory(acc.id) },
-              h("span", null, "Beli"),
-              h("small", null, formatFish(cost)),
-            ),
-          ),
+          h("div", { class: "buy" }, buyButton("Beli", accCost, { disabled: s.fish < accCost, onclick: () => this.buyAccessory(acc.id) })),
         ),
       );
     }
@@ -789,26 +828,13 @@ export class Ui {
   private renderCats(body: HTMLElement, now: number): void {
     const g = this.game;
     const s = g.state;
-    const feedCost = g.feedPrice(now);
-    const anyHungry = s.cats.some((c) => c.hunger < 0.999);
-    const spirit = spiritActive(s, now)
-      ? `Semangat aktif ${formatDuration((s.spiritUntil - now) / 1000)} lagi (+${Math.round(BALANCE.spiritBonus * 100)}%).`
-      : "Elus kucing di strip untuk bonus semangat +10% selama 10 menit.";
     body.append(
       h(
-        "div",
-        { class: "row header-row" },
-        h("div", { class: "info" }, h("div", { class: "name" }, `${s.cats.length} kucing`), h("div", { class: "desc" }, spirit)),
-        h(
-          "div",
-          { class: "buy" },
-          h(
-            "button",
-            { class: "btn btn-buy", disabled: !anyHungry || s.fish < feedCost, onclick: () => this.feedAll() },
-            h("span", null, "Beri makan"),
-            h("small", null, formatFish(feedCost)),
-          ),
-        ),
+        "p",
+        { class: `note${spiritActive(s, now) ? " good" : ""}` },
+        spiritActive(s, now)
+          ? `Semangat aktif ${formatDuration((s.spiritUntil - now) / 1000)} lagi: produksi +${Math.round(BALANCE.spiritBonus * 100)}%.`
+          : "Elus kucing di strip untuk semangat +10% selama 10 menit. Klik kanan kucing untuk ngobrol.",
       ),
     );
 
@@ -818,64 +844,72 @@ export class Ui {
       const coat = COAT_BY_ID[cat.coat];
       const trait = TRAITS[cat.trait];
       const working = cat.facility !== null && s.facilities[cat.facility] > 0 && catsAt(s, cat.facility).includes(cat);
-      const contribution = working ? formatPercent(catContribution(cat, ctx)) : "bersantai";
       const hs = hearts(cat);
-      const toNext = hs >= 5 ? "maksimal" : `${Math.floor(cat.bond - hs * BALANCE.bondPerHeart)}/${BALANCE.bondPerHeart} ke hati berikutnya`;
+      const toNext = hs >= 5 ? "Ikatan maksimal" : `${Math.floor(cat.bond - hs * BALANCE.bondPerHeart)} dari ${BALANCE.bondPerHeart} menuju hati berikutnya`;
+      const hungry = isHungry(cat);
       body.append(
         h(
           "div",
-          { class: "cat-card" },
-          h("img", { class: "px avatar", src: catImageUrl(cat.coat, "sit", 2, cat.accessory), alt: "" }),
+          { class: "cat-row" },
+          h("img", { class: "px cat-ava", src: catImageUrl(cat.coat, "sit", 2, cat.accessory), alt: "" }),
           h(
             "div",
-            { class: "info" },
-            this.renderCatName(cat),
-            h("div", { class: "desc" }, `${coat.name} · `, h("b", null, trait.name), `: ${trait.description}`),
+            { class: "cat-main" },
             h(
               "div",
-              { class: "hearts", title: `Ikatan: ${toNext}. Setiap hati +${Math.round(BALANCE.heartBonus * 100)}% produksi.` },
-              h("span", { class: "on" }, "♥".repeat(hs)),
-              h("span", { class: "off" }, "♥".repeat(5 - hs)),
-              h("span", { class: "bond-next" }, hs >= 5 ? "maks" : toNext.split(" ")[0]),
+              { class: "cat-top" },
+              this.renderCatName(cat),
+              h(
+                "span",
+                { class: "hearts", title: `${toNext}. Setiap hati +${Math.round(BALANCE.heartBonus * 100)}% produksi.` },
+                h("span", { class: "on" }, "♥".repeat(hs)),
+                h("span", { class: "off" }, "♥".repeat(5 - hs)),
+              ),
             ),
             h(
               "div",
-              { class: "meter-row" },
-              h("span", { class: "meter-label" }, isHungry(cat) ? "Lapar" : "Kenyang"),
-              h("div", { class: `meter${isHungry(cat) ? " low" : ""}` }, h("i", { style: { width: `${Math.round(cat.hunger * 100)}%` } })),
-              h("span", { class: "contrib" }, contribution),
-            ),
-          ),
-          h(
-            "div",
-            { class: "cat-actions" },
-            this.renderAssign(cat),
-            this.renderAccessory(cat),
-            h(
-              "button",
-              {
-                class: "btn small",
-                title: "Ngobrol dengan kucing ini (atau klik kanan kucingnya di strip)",
-                onclick: () => {
-                  this.closePanel();
-                  this.deps.chat(cat.id);
-                },
-              },
-              "Ngobrol",
+              { class: "cat-mid" },
+              h("span", { class: "cat-kind", title: `${trait.name}: ${trait.description}` }, `${coat.name}, ${trait.name.toLowerCase()}`),
+              h(
+                "span",
+                { class: `hunger${hungry ? " low" : ""}`, title: hungry ? "Lapar: produksinya berkurang" : "Kenyang" },
+                h("span", { class: "meter" }, h("i", { style: { width: `${Math.round(cat.hunger * 100)}%` } })),
+                hungry ? "lapar" : "kenyang",
+              ),
+              h("span", { class: "contrib", title: working ? "Sumbangan produksi kucing ini" : "Tidak bertugas di fasilitas" }, working ? formatPercent(catContribution(cat, ctx)) : "santai"),
             ),
             h(
-              "button",
-              {
-                class: "btn small",
-                title: "Panggil kucing ini ke dekat kursor",
-                onclick: () => {
-                  this.deps.interactions.callCat(cat.id);
-                  this.deps.sound("meow");
+              "div",
+              { class: "cat-actions" },
+              this.renderAssign(cat),
+              this.renderAccessory(cat),
+              h("span", { class: "spacer" }),
+              h(
+                "button",
+                {
+                  class: "btn small",
+                  title: "Ngobrol dengan kucing ini (atau klik kanan kucingnya di strip)",
+                  onclick: () => {
+                    this.closePanel();
+                    this.deps.chat(cat.id);
+                  },
                 },
-              },
-              "Panggil",
+                "Ngobrol",
+              ),
+              h(
+                "button",
+                {
+                  class: "btn small",
+                  title: "Panggil kucing ini ke dekat kursor",
+                  onclick: () => {
+                    this.deps.interactions.callCat(cat.id);
+                    this.deps.sound("meow");
+                  },
+                },
+                "Panggil",
+              ),
+              this.renderRelease(cat),
             ),
-            this.renderRelease(cat),
           ),
         ),
       );
@@ -884,7 +918,7 @@ export class Ui {
       h(
         "p",
         { class: "desc help" },
-        "Klik = elus · klik kanan = ngobrol · gerakkan kursor bolak-balik di atas kucing = usap sampai mendengkur · seret = angkat (jatuhkan di fasilitas untuk menugaskan). Jangan diklik terus-terusan, nanti ngambek!",
+        "Klik untuk mengelus, klik kanan untuk ngobrol, gerakkan kursor bolak-balik di atasnya sampai mendengkur, seret untuk mengangkat. Jangan diklik terus-terusan, nanti ngambek.",
       ),
     );
   }
@@ -899,7 +933,7 @@ export class Ui {
       {
         class: `btn small subtle-btn${confirm ? " btn-danger" : ""}`,
         disabled: last,
-        title: last ? "Kucing terakhir tidak bisa dilepas" : "Lepaskan kucing ini ke dunia luar",
+        title: last ? "Kucing terakhir tidak bisa dilepas" : confirm ? "Klik sekali lagi untuk melepaskannya ke dunia luar" : "Lepaskan kucing ini ke dunia luar",
         onclick: () => {
           if (!this.confirming(key)) {
             this.confirmUntil.set(key, Date.now() + 4000);
@@ -910,7 +944,7 @@ export class Ui {
           if (this.game.releaseCat(cat.id)) this.deps.sound("meow");
         },
       },
-      confirm ? "Yakin lepas?" : "Lepaskan",
+      confirm ? "Yakin?" : "Lepas",
     );
   }
 
@@ -1049,64 +1083,103 @@ export class Ui {
     body.append(
       h(
         "div",
-        { class: "photo-row" },
-        h(
-          "div",
-          { class: "info" },
-          h("div", { class: "name" }, "Foto kucing-kucingmu"),
-          h("div", { class: "desc" }, `Simpan pemandangan strip sekarang sebagai gambar PNG berbingkai. ${s.stats.photos} foto sejauh ini.`),
+        { class: "sticky" },
+        segmented<CollectionSub>(
+          [
+            { id: "prestasi", label: "Prestasi", icon: "trophy" },
+            { id: "kucingpedia", label: "Kucingpedia", icon: "paw" },
+            { id: "aksesori", label: "Aksesori", icon: "heart" },
+            { id: "foto", label: "Foto", icon: "star" },
+          ],
+          this.collectionSub,
+          (id) => {
+            this.collectionSub = id;
+            this.panelBody?.scrollTo({ top: 0 });
+            this.renderPanel();
+          },
         ),
-        h("button", { class: "btn btn-primary", onclick: () => void this.takePhoto() }, "Ambil foto"),
       ),
     );
-    this.renderAchievements(body);
-    body.append(
-      h("h3", null, `Kucingpedia · ${owned.size} dari ${COATS.length}`),
-      h("p", { class: "lead" }, "Fasilitas yang lebih mahal menarik kucing yang lebih langka untuk mampir."),
-    );
-    const grid = h("div", { class: "dex" });
-    for (const coat of COATS) {
-      const has = owned.has(coat.id);
-      const seen = s.discovered.includes(coat.id);
-      grid.append(
-        h(
-          "div",
-          { class: `dex-cell${has ? "" : seen ? " seen" : " unknown"}`, title: has || seen ? `${coat.name}: ${coat.blurb}` : "Belum ditemukan" },
-          h("img", { class: "px", src: has || seen ? catImageUrl(coat.id, "sit", 2) : silhouetteUrl(2), alt: "" }),
-          h("div", { class: "dex-name" }, has || seen ? coat.name : "???"),
-          h("span", { class: `badge r-${coat.rarity}` }, RARITY_LABEL[coat.rarity]),
-        ),
-      );
+    switch (this.collectionSub) {
+      case "prestasi":
+        this.renderAchievements(body);
+        return;
+      case "foto":
+        body.append(
+          h(
+            "div",
+            { class: "feature" },
+            h("img", { class: "px feature-art", src: catImageUrl(s.cats[0]?.coat ?? "oyen", "sitHappy", 3, s.cats[0]?.accessory ?? null), alt: "" }),
+            h(
+              "div",
+              { class: "info" },
+              h("div", { class: "feature-title" }, "Foto kucing-kucingmu"),
+              h(
+                "p",
+                { class: "desc" },
+                this.deps.canOpenFolder
+                  ? `Simpan pemandangan strip sekarang sebagai gambar berbingkai di folder Gambar › Meow Corner. Sudah ${s.stats.photos} foto.`
+                  : `Simpan pemandangan strip sekarang sebagai gambar berbingkai. Sudah ${s.stats.photos} foto.`,
+              ),
+              h(
+                "div",
+                { class: "button-row" },
+                h("button", { class: "btn btn-primary", onclick: () => void this.takePhoto() }, "Ambil foto"),
+                this.deps.canOpenFolder ? h("button", { class: "btn", onclick: () => void this.deps.openPhotoFolder() }, "Buka folder") : null,
+              ),
+            ),
+          ),
+        );
+        return;
+      case "kucingpedia": {
+        body.append(h("p", { class: "desc" }, "Fasilitas yang lebih mahal menarik kucing yang lebih langka untuk mampir."));
+        const grid = h("div", { class: "dex" });
+        for (const coat of COATS) {
+          const has = owned.has(coat.id);
+          const seen = s.discovered.includes(coat.id);
+          grid.append(
+            h(
+              "div",
+              { class: `dex-cell${has ? "" : seen ? " seen" : " unknown"}`, title: has || seen ? `${coat.name}: ${coat.blurb}` : "Belum ditemukan" },
+              h("img", { class: "px", src: has || seen ? catImageUrl(coat.id, "sit", 2) : silhouetteUrl(2), alt: "" }),
+              h("div", { class: "dex-name" }, has || seen ? coat.name : "???"),
+              h("span", { class: `badge r-${coat.rarity}` }, RARITY_LABEL[coat.rarity]),
+            ),
+          );
+        }
+        body.append(grid);
+        return;
+      }
+      case "aksesori": {
+        const owns = new Set(s.inventory.accessories);
+        const model = [...s.cats].sort((a, b) => a.adoptedAt - b.adoptedAt)[0];
+        body.append(h("p", { class: "desc" }, "Aksesori bertanda Hadiah hanya datang dari kucing yang sayang padamu."));
+        const accGrid = h("div", { class: "dex" });
+        for (const acc of ACCESSORIES) {
+          const has = owns.has(acc.id);
+          const giftOnly = acc.price === null;
+          accGrid.append(
+            h(
+              "div",
+              {
+                class: `dex-cell${has ? "" : giftOnly ? " unknown" : " seen"}`,
+                title: has ? `${acc.name}: ${acc.description}` : giftOnly ? "Hanya bisa didapat sebagai hadiah dari kucing yang sayang padamu." : `Dijual di Toko seharga ${formatFish(acc.price!)} ikan.`,
+              },
+              h("img", { class: "px", src: has || !giftOnly ? catImageUrl(model?.coat ?? "oyen", "sit", 2, acc.id) : silhouetteUrl(2), alt: "" }),
+              h("div", { class: "dex-name" }, has || !giftOnly ? acc.name : "???"),
+              giftOnly ? h("span", { class: "badge r-epik" }, "Hadiah") : null,
+            ),
+          );
+        }
+        body.append(accGrid);
+        return;
+      }
     }
-    body.append(grid);
-
-    const owns = new Set(s.inventory.accessories);
-    const model = [...s.cats].sort((a, b) => a.adoptedAt - b.adoptedAt)[0];
-    body.append(h("h3", null, `Aksesori · ${owns.size} dari ${ACCESSORIES.length}`));
-    const accGrid = h("div", { class: "dex" });
-    for (const acc of ACCESSORIES) {
-      const has = owns.has(acc.id);
-      const giftOnly = acc.price === null;
-      accGrid.append(
-        h(
-          "div",
-          {
-            class: `dex-cell${has ? "" : giftOnly ? " unknown" : " seen"}`,
-            title: has ? `${acc.name}: ${acc.description}` : giftOnly ? "Hanya bisa didapat sebagai hadiah dari kucing yang sayang padamu." : `Dijual di Toko seharga ${formatFish(acc.price!)} ikan.`,
-          },
-          h("img", { class: "px", src: has || !giftOnly ? catImageUrl(model?.coat ?? "oyen", "sit", 2, acc.id) : silhouetteUrl(2), alt: "" }),
-          h("div", { class: "dex-name" }, has || !giftOnly ? acc.name : "???"),
-          giftOnly ? h("span", { class: "badge r-epik" }, "Hadiah") : null,
-        ),
-      );
-    }
-    body.append(accGrid);
   }
 
   private renderAchievements(body: HTMLElement): void {
     const s = this.game.state;
     const done = new Set(s.achievements);
-    body.append(h("h3", null, `Prestasi · ${done.size} dari ${ACHIEVEMENTS.length}`));
     const list = h("div", { class: "achievements" });
     // Yang hampir tercapai ditampilkan lebih dulu; yang sudah selesai di akhir.
     const items = ACHIEVEMENTS.filter((a) => !a.secret || done.has(a.id))
@@ -1120,12 +1193,12 @@ export class Ui {
         h(
           "div",
           { class: `ach${unlocked ? " unlocked" : ""}` },
-          h("img", { class: "px ach-icon", src: objectImageUrl(unlocked ? "trophy" : "star", 2), alt: "" }),
+          h("img", { class: "px ach-icon", src: objectImageUrl(unlocked ? "trophy" : "star", 2), alt: unlocked ? "Terbuka" : "" }),
           h(
             "div",
             { class: "info" },
             h("div", { class: "name" }, a.name),
-            h("div", { class: "desc" }, `${a.description} Hadiah: ${describeReward(a.reward)}.`),
+            h("div", { class: "desc" }, a.description, h("span", { class: "reward" }, ` Hadiah: ${describeReward(a.reward)}.`)),
             unlocked
               ? null
               : h(
@@ -1154,26 +1227,34 @@ export class Ui {
     const s = g.state;
     const gain = g.prestigePreview();
     const toNext = fishToNextStar(s.totalFishRun);
+    // Kemajuan menuju Bintang berikutnya sejak Pindah Rumah terakhir.
+    const progress = s.totalFishRun / Math.max(1, s.totalFishRun + toNext);
     body.append(
       h(
         "div",
         { class: "stars" },
-        h("div", { class: "stars-count" }, `★ ${s.stars}`),
-        h("div", { class: "desc" }, `Bintang memberi bonus produksi permanen ${formatPercent(s.stars * BALANCE.starBonus)}.`),
+        h("div", { class: "stars-count" }, h("span", { class: "stars-icon" }, "★"), String(s.stars)),
+        h(
+          "div",
+          { class: "stars-info" },
+          h("div", null, s.stars > 0 ? `Produksi permanen +${formatPercent(s.stars * BALANCE.starBonus).replace("+", "")}` : "Belum ada Bintang"),
+          h("div", { class: "meter stars-meter" }, h("i", { style: { width: `${Math.round(progress * 100)}%` } })),
+          h(
+            "div",
+            { class: "desc" },
+            gain > 0
+              ? `Pindah sekarang memberi +${gain} Bintang. Berikutnya setelah ${formatFish(toNext)} ikan lagi.`
+              : `${formatFish(toNext)} ikan lagi menuju Bintang ${s.stars > 0 ? "berikutnya" : "pertama"}.`,
+          ),
+        ),
       ),
+      h("h3", null, "Pindah Rumah"),
+      h("p", null, "Mulai lagi di rumah baru dengan bonus Bintang. Setiap Bintang menambah produksi 2% selamanya."),
       h(
-        "p",
-        null,
-        gain > 0
-          ? h("span", null, "Pindah Rumah sekarang memberi ", h("b", null, `+${gain} Bintang`), ".")
-          : `Kumpulkan ${formatFish(toNext)} ikan lagi untuk Bintang pertamamu.`,
-      ),
-      h("p", { class: "desc" }, gain > 0 ? `Bintang berikutnya setelah ${formatFish(toNext)} ikan lagi.` : ""),
-      h(
-        "ul",
-        { class: "plain" },
-        h("li", null, "Hilang: ikan, fasilitas, dan upgrade fasilitas."),
-        h("li", null, "Tetap: semua kucing, Kucingpedia, upgrade kasur, dan Bintang."),
+        "div",
+        { class: "keep-lose" },
+        h("div", null, h("b", null, "Hilang"), h("span", { class: "desc" }, "ikan, fasilitas, dan upgrade fasilitas")),
+        h("div", null, h("b", null, "Tetap"), h("span", { class: "desc" }, "semua kucing, Kucingpedia, upgrade kasur, dan Bintang")),
       ),
     );
     const confirm = this.confirming("prestige");
@@ -1193,7 +1274,7 @@ export class Ui {
             g.prestige(Date.now());
           },
         },
-        confirm ? "Yakin? Klik sekali lagi untuk pindah" : "Pindah Rumah",
+        gain < 1 ? "Belum bisa pindah" : confirm ? "Yakin? Klik sekali lagi untuk pindah" : `Pindah Rumah (+${gain} Bintang)`,
       ),
     );
   }
@@ -1202,10 +1283,46 @@ export class Ui {
   // Tab Atur
 
   private renderSettings(body: HTMLElement): void {
+    body.append(
+      h(
+        "div",
+        { class: "sticky" },
+        segmented<SettingsSub>(
+          [
+            { id: "umum", label: "Umum", icon: "speaker" },
+            { id: "kucing", label: "Obrolan & ketik", icon: "chat" },
+            { id: "bantuan", label: "Bantuan", icon: "question" },
+            { id: "aplikasi", label: "Aplikasi", icon: "gear" },
+          ],
+          this.settingsSub,
+          (id) => {
+            this.settingsSub = id;
+            this.panelBody?.scrollTo({ top: 0 });
+            this.renderPanel();
+          },
+        ),
+      ),
+    );
+    switch (this.settingsSub) {
+      case "umum":
+        this.renderGeneralSettings(body);
+        break;
+      case "kucing":
+        body.append(...this.renderChatSettings(), ...this.renderTypingSettings());
+        break;
+      case "bantuan":
+        this.renderHelp(body);
+        break;
+      case "aplikasi":
+        this.renderAppSettings(body);
+        break;
+    }
+  }
+
+  private renderGeneralSettings(body: HTMLElement): void {
     const g = this.game;
     const st = g.state.settings;
-    const stats = g.state.stats;
-    const slider = (value: number, min: number, max: number, onInput: (v: number) => void, onChange: (v: number) => void) =>
+    const slider = (value: number, min: number, max: number, onInput: (v: number) => void, onChange: (v: number) => void, label: string) =>
       h("input", {
         type: "range",
         class: "slider",
@@ -1213,54 +1330,76 @@ export class Ui {
         max,
         step: 5,
         value: Math.round(value * 100),
+        "aria-label": label,
         oninput: (e: Event) => onInput(Number((e.target as HTMLInputElement).value) / 100),
         onchange: (e: Event) => {
           onChange(Number((e.target as HTMLInputElement).value) / 100);
           (e.target as HTMLInputElement).blur();
         },
       });
+    const choice = <T extends string | number>(options: [T, string][], value: T, pick: (v: T) => void, extra?: HTMLElement) =>
+      h(
+        "div",
+        { class: "choice" },
+        ...options.map(([v, label]) => h("button", { class: `choice-item${value === v ? " active" : ""}`, onclick: () => pick(v) }, label)),
+        extra ?? null,
+      );
     body.append(
       h("h3", null, "Suara"),
-      this.toggle("Efek suara (eongan, dengkur, bunyi pengingat)", st.sound, (v) => {
+      this.toggle("Efek suara: eongan, dengkur, bunyi pengingat", st.sound, (v) => {
         g.updateSettings({ sound: v });
         if (v) this.deps.sound("meow");
       }),
       h(
         "div",
         { class: "setting" },
-        h("span", null, `Volume`),
+        h("span", null, "Volume"),
         h(
           "div",
           { class: "form-row tight" },
-          slider(st.volume, 0, 100, (v) => this.deps.previewVolume(v), (v) => {
-            g.updateSettings({ volume: v });
-            this.deps.sound("meow");
-          }),
+          slider(
+            st.volume,
+            0,
+            100,
+            (v) => this.deps.previewVolume(v),
+            (v) => {
+              g.updateSettings({ volume: v });
+              this.deps.sound("meow");
+            },
+            "Volume",
+          ),
           h("button", { class: "btn small", title: "Coba suara", onclick: () => this.deps.sound("meow") }, "Coba"),
         ),
       ),
-      this.toggle("Musik latar santai (kotak musik)", st.music, (v) => g.updateSettings({ music: v })),
+      this.toggle("Musik latar kotak musik", st.music, (v) => g.updateSettings({ music: v })),
+      h("h3", null, "Tampilan"),
+      h(
+        "div",
+        { class: "setting" },
+        h("span", null, "Ukuran kucing"),
+        choice<2 | 3>(
+          [
+            [2, "Kecil"],
+            [3, "Besar"],
+          ],
+          st.scale,
+          (sc) => g.updateSettings({ scale: sc }),
+        ),
+      ),
+      this.toggle("Mode tenang: animasi pelan, hemat daya", st.focusMode, (v) => g.updateSettings({ focusMode: v })),
       h("h3", null, "Panel bawah"),
       h(
         "div",
         { class: "setting" },
         h("span", null, "Ukuran"),
-        h(
-          "div",
-          { class: "segmented" },
-          ...(
-            [
-              ["full", "Lengkap"],
-              ["compact", "Ringkas"],
-            ] as const
-          ).map(([size, label]) =>
-            h(
-              "button",
-              { class: `btn small${st.hudSize === size ? " active" : ""}`, onclick: () => g.updateSettings({ hudSize: size, hudCollapsed: false }) },
-              label,
-            ),
-          ),
-          h("button", { class: "btn small", title: "Ciutkan jadi pil kecil (klik pil untuk membuka lagi)", onclick: () => this.setCollapsed(true) }, "Mini"),
+        choice<"full" | "compact">(
+          [
+            ["full", "Lengkap"],
+            ["compact", "Ringkas"],
+          ],
+          st.hudSize,
+          (size) => g.updateSettings({ hudSize: size, hudCollapsed: false }),
+          h("button", { class: "choice-item", title: "Ciutkan jadi pil kecil (klik pil untuk membuka lagi)", onclick: () => this.setCollapsed(true) }, "Mini"),
         ),
       ),
       h(
@@ -1273,52 +1412,54 @@ export class Ui {
           100,
           (v) => this.hud.style.setProperty("--hud-opacity", String(v)),
           (v) => g.updateSettings({ hudOpacity: v }),
+          "Kepekatan panel bawah",
         ),
       ),
       h("p", { class: "desc" }, "Panel kembali pekat saat kursor berada di atasnya."),
-      ...this.renderChatSettings(),
-      ...this.renderTypingSettings(),
+    );
+  }
+
+  private renderHelp(body: HTMLElement): void {
+    const g = this.game;
+    const stats = g.state.stats;
+    const howto: [string, string][] = [
+      ["Klik", "kucing untuk mengelus. Bonus semangat +10% selama 10 menit."],
+      ["Klik kanan", "kucing untuk mengobrol. Jawabannya mengikuti sifat dan suasana hatinya."],
+      ["Usap", "dengan menggerakkan kursor bolak-balik di atas kucing sampai ia mendengkur. Memberi ikatan."],
+      ["Seret", "kucing untuk mengangkatnya, lalu jatuhkan di fasilitas untuk menugaskannya."],
+      ["Mainan bulu", "membuat kucing mengejar kursormu. Tangkapan memberi ikan dan ikatan."],
+      ["Camilan", "diberikan dengan menekan tombol camilan lalu mengeklik kucing. Ampuh untuk yang ngambek."],
+      ["Hati", "ikatan menambah produksi 2% per hati. Mulai 3 hati, kucing kadang membawakan hadiah."],
+    ];
+    const stat = (label: string, value: string | number) =>
+      h("div", { class: "stat" }, h("span", { class: "stat-value" }, typeof value === "number" ? Math.floor(value).toLocaleString("id-ID") : value), h("span", { class: "desc" }, label));
+    body.append(
       h("h3", null, "Cara berinteraksi"),
-      h(
-        "ul",
-        { class: "plain" },
-        h("li", null, h("b", null, "Klik"), " kucing untuk mengelus (bonus semangat +10%)."),
-        h("li", null, h("b", null, "Klik kanan"), " kucing untuk mengobrol. Pilih kalimatmu, kucing menjawab sesuai sifat dan suasana hatinya."),
-        h("li", null, h("b", null, "Usap"), ": gerakkan kursor bolak-balik di atas kucing tanpa klik sampai ia mendengkur. Memberi ikatan."),
-        h("li", null, h("b", null, "Seret"), " kucing untuk mengangkatnya. Jatuhkan di atas fasilitas untuk menugaskannya, atau ke dalam kardus."),
-        h("li", null, h("b", null, "Mainan bulu"), " (tombol bulu): kucing mengejar dan menerkam. Tangkapan memberi ikan dan ikatan."),
-        h("li", null, h("b", null, "Camilan"), ": tombol camilan, lalu klik kucing. Ampuh untuk membujuk kucing yang ngambek."),
-        h("li", null, "Setiap hati ikatan +2% produksi. Mulai 3 hati, kucing kadang membawakan hadiah."),
-      ),
-      h("h3", null, "Tampilan"),
-      h(
-        "div",
-        { class: "setting" },
-        h("span", null, "Ukuran kucing"),
-        h(
-          "div",
-          { class: "segmented" },
-          ...([2, 3] as const).map((sc) =>
-            h("button", { class: `btn small${st.scale === sc ? " active" : ""}`, onclick: () => g.updateSettings({ scale: sc }) }, `${sc}×`),
-          ),
-        ),
-      ),
-      this.toggle("Mode Fokus (animasi tenang, hemat daya)", st.focusMode, (v) => g.updateSettings({ focusMode: v })),
+      h("dl", { class: "howto" }, ...howto.flatMap(([term, text]) => [h("dt", null, term), h("dd", null, text)])),
       h("h3", null, "Statistik"),
       h(
-        "ul",
-        { class: "plain stats" },
-        h("li", null, `Total ikan: ${formatFish(g.state.totalFishAll)}`),
-        h("li", null, `Kucing diadopsi: ${stats.catsAdopted}`),
-        h("li", null, `Elusan: ${stats.petted}`),
-        h("li", null, `Ikan berkilau ditangkap: ${stats.sparklesCaught}`),
-        h("li", null, `Dengkuran: ${stats.purrs} · Camilan diberikan: ${stats.treatsGiven}`),
-        h("li", null, `Bulu ditangkap: ${stats.toyCatches} · Hadiah diterima: ${stats.giftsReceived}`),
-        h("li", null, `Sesi fokus: ${stats.focusSessions} · Tugas selesai: ${stats.todosDone} · Pengingat: ${stats.remindersFired}`),
-        h("li", null, `Hadiah harian: ${g.state.daily.streak} hari berturut-turut (rekor ${g.state.daily.best})`),
-        h("li", null, `Obrolan: ${stats.chats} · Ketukan bersama kucing: ${Math.floor(stats.taps).toLocaleString("id-ID")}`),
-        h("li", null, `Batas progres offline: ${offlineCapHours(g.state)} jam`),
+        "div",
+        { class: "stat-grid" },
+        stat("ikan sepanjang masa", formatFish(g.state.totalFishAll)),
+        stat("kucing diadopsi", stats.catsAdopted),
+        stat("elusan", stats.petted),
+        stat("dengkuran", stats.purrs),
+        stat("camilan diberikan", stats.treatsGiven),
+        stat("bulu ditangkap", stats.toyCatches),
+        stat("hadiah diterima", stats.giftsReceived),
+        stat("ikan berkilau", stats.sparklesCaught),
+        stat("sesi fokus", stats.focusSessions),
+        stat("tugas selesai", stats.todosDone),
+        stat("obrolan", stats.chats),
+        stat("ketukan", stats.taps),
+        stat("hari berturut-turut", `${g.state.daily.streak} (rekor ${g.state.daily.best})`),
+        stat("batas progres offline", `${offlineCapHours(g.state)} jam`),
       ),
+    );
+  }
+
+  private renderAppSettings(body: HTMLElement): void {
+    body.append(
       h("h3", null, "Aplikasi"),
       h(
         "div",
@@ -1334,16 +1475,19 @@ export class Ui {
           },
           "Simpan sekarang",
         ),
-        this.deps.canHide ? h("button", { class: "btn", onclick: () => void this.deps.hide() }, "Sembunyikan") : null,
+        this.deps.canHide ? h("button", { class: "btn", onclick: () => void this.deps.hide() }, "Sembunyikan strip") : null,
         h("button", { class: "btn", onclick: () => void this.deps.quit() }, "Keluar"),
       ),
+      h("p", { class: "desc" }, "Progres tersimpan otomatis setiap menit dan saat keluar. Strip yang disembunyikan bisa dimunculkan lagi lewat ikon kucing di tray."),
+      h("h3", null, "Mulai dari awal"),
+      h("p", { class: "desc" }, "Menghapus ikan, fasilitas, kucing, dan prestasi. Pengingat, daftar tugas, dan nama panggilanmu tetap disimpan."),
     );
     const confirm = this.confirming("reset");
     body.append(
       h(
         "button",
         {
-          class: `btn ${confirm ? "btn-danger" : ""} wide subtle`,
+          class: `btn ${confirm ? "btn-danger" : ""} wide`,
           onclick: () => {
             if (!this.confirming("reset")) {
               this.confirmUntil.set("reset", Date.now() + 4000);
@@ -1495,6 +1639,7 @@ export class Ui {
       ),
     );
     this.root.append(this.dialog);
+    this.root.classList.add("dialog-open");
     queueMicrotask(() => input.focus());
   }
 
@@ -1556,12 +1701,14 @@ export class Ui {
       ),
     );
     this.root.append(this.dialog);
+    this.root.classList.add("dialog-open");
     return true;
   }
 
   closeDialog(): void {
     this.dialog?.remove();
     this.dialog = null;
+    this.root.classList.remove("dialog-open");
   }
 
   // -------------------------------------------------------------------------

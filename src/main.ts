@@ -1,5 +1,6 @@
 // Titik masuk: menyambungkan inti game, tampilan PixiJS, UI HTML, dan jembatan desktop.
 
+import "@fontsource/tiny5/latin-400.css";
 import "./ui/style.css";
 import { Game } from "./core/game";
 import { AutoSaver, loadState } from "./core/save";

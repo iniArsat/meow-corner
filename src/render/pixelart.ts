@@ -901,14 +901,28 @@ export const OBJECTS = {
     colors: { P: "#ef7f9b" },
     outline: "#5a1f33",
   },
+  /** Suara menyala: not balok. */
   speaker: {
-    grid: ["...K...", "..KK.W.", "KKKK..W", "KKKK..W", "..KK.W.", "...K..."],
-    colors: { K: "#5a4a42", W: "#4aa3df" },
+    grid: ["....OO.", "....OOO", "....O.O", "....O..", ".OOOO..", "OOOOO..", ".OOO..."],
+    colors: { O: "#f0882a" },
     outline: "#2a1d1a",
   },
+  /** Suara mati: not abu-abu dengan tanda silang. */
   speakerOff: {
-    grid: ["...K....", "..KK.R.R", "KKKK..R.", "KKKK.R.R", "..KK....", "...K...."],
-    colors: { K: "#5a4a42", R: "#e2443e" },
+    grid: ["....GG...", "....GGG..", "....G.G..", "....G.R.R", ".GGGG..R.", "GGGGG.R.R", ".GGG.....", ],
+    colors: { G: "#a99d93", R: "#e2443e" },
+    outline: "#2a1d1a",
+  },
+  /** Roda gigi (tab Atur). */
+  gear: {
+    grid: ["...G...", ".GGGGG.", ".Gg.GG.", "GG...GG", ".GG.GG.", ".GGGGG.", "...G..."],
+    colors: { G: "#8f97a3", g: "#c9cfd8" },
+    outline: "#2a1d1a",
+  },
+  /** Rumah kecil (tab Rumah). */
+  house: {
+    grid: ["...R...", "..RRR..", ".RRRRR.", "RRRRRRR", ".WWWWW.", ".WDWYW.", ".WDWWW."],
+    colors: { R: "#d9573f", W: "#f3d9a6", D: "#8a5a35", Y: "#ffd84d" },
     outline: "#2a1d1a",
   },
   cloud1: {
