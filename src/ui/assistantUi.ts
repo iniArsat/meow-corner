@@ -27,7 +27,6 @@ import { PHASE_LABEL, WEATHER_KINDS, WEATHER_LABEL, cityClock, currentWeather, p
 import type { ObjectId } from "../render/pixelart";
 import { objectImageUrl } from "../render/textures";
 import { h } from "./dom";
-import { segmented } from "./widgets";
 import type { SoundId } from "./sound";
 
 export interface AssistantHost {
@@ -296,16 +295,24 @@ export class AssistantUi {
   // Tab Asisten
 
   renderTab(body: HTMLElement, now: number): void {
-    body.append(
-      h(
-        "div",
-        { class: "sticky" },
-        segmented(SUBTABS, this.sub, (id) => {
-          this.sub = id;
-          this.host.rerender();
-        }),
-      ),
-    );
+    const chips = h("div", { class: "subtabs" });
+    for (const t of SUBTABS) {
+      chips.append(
+        h(
+          "button",
+          {
+            class: `chip${this.sub === t.id ? " active" : ""}`,
+            onclick: () => {
+              this.sub = t.id;
+              this.host.rerender();
+            },
+          },
+          h("img", { class: "px", src: objectImageUrl(t.icon, 2), alt: "" }),
+          t.label,
+        ),
+      );
+    }
+    body.append(chips);
     switch (this.sub) {
       case "pengingat":
         this.renderReminders(body, now);
@@ -323,21 +330,6 @@ export class AssistantUi {
         this.renderWeather(body, now);
         break;
     }
-  }
-
-  /** Satu kalimat ringkas untuk judul panel: sesi fokus, pengingat terdekat, atau tugas. */
-  headline(now: number): string {
-    const a = this.game.state.assistant;
-    if (a.focus.phase === "focus") return `Fokus, ${formatCountdown(a.focus.endsAt - now)} lagi`;
-    if (a.focus.phase === "break") return `Istirahat, ${formatCountdown(a.focus.endsAt - now)} lagi`;
-    let soonest: { at: number; text: string } | null = null;
-    for (const r of a.reminders) {
-      const at = nextReminderAt(r);
-      if (at !== null && at > now && (!soonest || at < soonest.at)) soonest = { at, text: r.text };
-    }
-    if (soonest) return `Berikutnya: ${soonest.text}, ${formatDay(soonest.at, now)} ${formatClock(soonest.at)}`;
-    const open = a.todos.filter((t) => !t.done).length;
-    return open > 0 ? `${open} tugas belum selesai` : "";
   }
 
   /** Pindah ke sub-tab; true bila sebelumnya berada di sub-tab lain. */

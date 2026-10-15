@@ -1,5 +1,7 @@
 // Efek cuaca di strip: hujan (tetes, percikan, genangan), salju, awan, kabut,
 // kilat, daun tertiup angin, serta bulan dan bintang di malam cerah.
+// Semua efek hanya tampil di pita rendah di atas area kucing (kiri bawah layar),
+// tidak di seluruh jendela, agar tidak mengganggu pekerjaan di layar.
 
 import { Container, Graphics, Sprite } from "pixi.js";
 import type { WeatherKind } from "../core/types";
@@ -18,6 +20,7 @@ export interface WeatherView {
   wind: number;
   phase: DayPhase;
   scale: number;
+  /** Tepi kanan area kucing (efek tidak melewatinya). */
   width: number;
   groundY: number;
   minX: number;
@@ -25,6 +28,9 @@ export interface WeatherView {
   /** Mode Fokus: efek dikurangi. */
   calm: boolean;
 }
+
+/** Tinggi pita langit di atas lantai, dalam piksel sprite. */
+export const SKY_HEIGHT = 44;
 
 interface Drop {
   sprite: Sprite;
@@ -102,7 +108,17 @@ export class WeatherFx {
   /** Dipanggil saat kilat menyambar (untuk guruh dan reaksi kucing). */
   onLightning: (() => void) | null = null;
 
+  /** Potongan pita langit untuk setiap lapisan (agar efek tidak keluar dari area kucing). */
+  private masks: Graphics[] = [];
+  private maskKey = "";
+
   constructor() {
+    for (const layer of [this.back, this.ground, this.front]) {
+      const m = new Graphics();
+      layer.addChild(m);
+      layer.mask = m;
+      this.masks.push(m);
+    }
     this.moon = new Sprite(objectTexture("moon"));
     this.moon.anchor.set(0.5);
     this.moon.alpha = 0;
@@ -122,7 +138,14 @@ export class WeatherFx {
     const dark = isDark(v.phase);
     const wet = v.kind === "drizzle" || v.kind === "rain" || v.kind === "storm";
     this.wet = wet && v.intensity > 0;
-    const top = v.groundY - 80 * s;
+    const top = v.groundY - SKY_HEIGHT * s;
+
+    // Pita langit: dari lantai sampai SKY_HEIGHT di atasnya, selebar area kucing.
+    const key = `${v.width}:${v.groundY}:${s}`;
+    if (key !== this.maskKey) {
+      this.maskKey = key;
+      for (const m of this.masks) m.clear().rect(0, top - 6 * s, v.width, v.groundY - top + 10 * s).fill(0xffffff);
+    }
 
     // ---- Tetes hujan / salju
     const snowing = v.kind === "snow";
@@ -214,9 +237,9 @@ export class WeatherFx {
       const sp = new Sprite(objectTexture(Math.random() < 0.55 ? "cloud1" : "cloud2"));
       sp.anchor.set(0.5);
       sp.alpha = 0;
-      const scaleK = rand(0.9, 1.4);
+      const scaleK = rand(0.7, 1);
       sp.scale.set(s * scaleK);
-      sp.position.set(rand(0, v.width), v.groundY - rand(78, 108) * s);
+      sp.position.set(rand(0, v.width), v.groundY - rand(34, 40) * s);
       this.back.addChild(sp);
       this.clouds.push({ sprite: sp, speed: rand(3, 7) * s, target: 1 });
     }
@@ -232,8 +255,8 @@ export class WeatherFx {
       const c = this.clouds[i];
       const dir = v.wind >= 0 ? 1 : -1;
       c.sprite.x += (c.speed + Math.abs(v.wind) * 0.25 * s) * dir * dt;
-      if (c.sprite.x > v.width + 80 * s) c.sprite.x = -80 * s;
-      if (c.sprite.x < -80 * s) c.sprite.x = v.width + 80 * s;
+      if (c.sprite.x > v.width + 20 * s) c.sprite.x = -20 * s;
+      if (c.sprite.x < -20 * s) c.sprite.x = v.width + 20 * s;
       const targetAlpha = c.target * (v.kind === "partly" ? 0.75 : 0.92);
       c.sprite.alpha += (targetAlpha - c.sprite.alpha) * Math.min(1, dt * 0.6);
       c.sprite.tint = cloudTint;
@@ -257,14 +280,14 @@ export class WeatherFx {
     this.stars.forEach((st, i) => {
       const fx = ((i * 7919) % 997) / 997;
       const fy = ((i * 104729) % 991) / 991;
-      st.position.set(Math.round(v.minX + fx * (v.maxX - v.minX)), Math.round(v.groundY - (62 + fy * 50) * s));
+      st.position.set(Math.round(v.minX + fx * (v.maxX - v.minX)), Math.round(v.groundY - (22 + fy * 20) * s));
       st.width = st.height = Math.max(2, Math.round(s * (i % 4 === 0 ? 1 : 0.67)));
       const twinkle = 0.45 + 0.45 * Math.sin(this.t * (1.3 + (i % 5) * 0.3) + i);
       const target = clearNight ? twinkle : 0;
       st.alpha += (target - st.alpha) * Math.min(1, dt * 1.5);
     });
-    this.moon.scale.set(s);
-    this.moon.position.set(Math.round(v.minX + (v.maxX - v.minX) * 0.72), Math.round(v.groundY - 100 * s));
+    this.moon.scale.set(s * 0.8);
+    this.moon.position.set(Math.round(v.minX + (v.maxX - v.minX) * 0.9), Math.round(v.groundY - 36 * s));
     this.moon.alpha += ((clearNight ? 0.95 : 0) - this.moon.alpha) * Math.min(1, dt);
 
     // ---- Kabut
@@ -283,8 +306,8 @@ export class WeatherFx {
     for (let i = this.fogs.length - 1; i >= 0; i--) {
       const g = this.fogs[i];
       g.x += (4 + i) * s * dt * (i % 2 ? 1 : -1);
-      if (g.x > v.width + 220 * s) g.x = -220 * s;
-      if (g.x < -220 * s) g.x = v.width + 220 * s;
+      if (g.x > v.width + 60 * s) g.x = -60 * s;
+      if (g.x < -60 * s) g.x = v.width + 60 * s;
       g.alpha += ((foggy ? 1 : 0) - g.alpha) * Math.min(1, dt * 0.4);
       if (!foggy && g.alpha < 0.02) {
         g.destroy();
@@ -298,7 +321,7 @@ export class WeatherFx {
       sp.anchor.set(0.5);
       sp.scale.set(s * 0.8);
       const fromLeft = v.wind >= 0;
-      sp.position.set(fromLeft ? -20 : v.width + 20, v.groundY - rand(10, 70) * s);
+      sp.position.set(fromLeft ? -20 : v.width + 20, v.groundY - rand(6, 34) * s);
       this.front.addChild(sp);
       this.leaves.push({ sprite: sp, vx: (fromLeft ? 1 : -1) * rand(50, 90) * s * (v.wind / 30), vy: rand(-6, 10) * s, spin: rand(-3, 3) });
     }
@@ -315,8 +338,9 @@ export class WeatherFx {
     }
 
     // ---- Kilat
+    this.flash.position.set(0, top - 6 * s);
     this.flash.width = v.width;
-    this.flash.height = v.groundY + 10;
+    this.flash.height = v.groundY - top + 16 * s;
     if (v.kind === "storm") {
       this.nextLightning -= dt;
       if (this.nextLightning <= 0) {

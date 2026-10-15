@@ -1,4 +1,5 @@
-// Suasana: kupu-kupu di siang hari dan kunang-kunang di malam hari.
+// Suasana: kupu-kupu di siang hari dan kunang-kunang di malam hari, hanya di
+// pita rendah di atas area kucing.
 
 import { Container, Graphics, Sprite } from "pixi.js";
 import { objectTexture } from "./textures";
@@ -38,7 +39,7 @@ export class Butterfly {
     const fromLeft = Math.random() < 0.5;
     this.x = fromLeft ? -20 : ctx.maxX + 20;
     this.vx = (fromLeft ? 1 : -1) * rand(9, 14) * ctx.scale;
-    this.baseY = ctx.groundY - rand(18, 40) * ctx.scale;
+    this.baseY = ctx.groundY - rand(16, 34) * ctx.scale;
     this.y = this.baseY;
     this.sprite.anchor.set(0.5);
   }
@@ -66,12 +67,12 @@ export class Butterfly {
       this.x += this.vx * dt;
       // Turun-naik pelan, kadang mendekati lantai (menggoda kucing).
       this.baseY += Math.sin(this.t * 0.7) * 6 * s * dt;
-      this.baseY = Math.min(ctx.groundY - 10 * s, Math.max(ctx.groundY - 60 * s, this.baseY));
+      this.baseY = Math.min(ctx.groundY - 10 * s, Math.max(ctx.groundY - 40 * s, this.baseY));
     }
     this.y = this.baseY + Math.sin(this.t * 3.1) * 3 * s;
     this.sprite.scale.set(s * (this.vx < 0 ? -1 : 1), s);
     this.sprite.position.set(Math.round(this.x), Math.round(this.y));
-    if (this.x < -40 || this.x > ctx.width + 40 || this.y < -20) this.done = true;
+    if (this.x < -40 || this.x > ctx.width + 40 || this.y < ctx.groundY - 50 * s) this.done = true;
   }
 
   destroy(): void {
@@ -133,7 +134,7 @@ export class Ambient {
       this.fireflies.push({
         g,
         x: rand(ctx.minX, ctx.maxX),
-        y: ctx.groundY - rand(10, 70) * s,
+        y: ctx.groundY - rand(8, 38) * s,
         vx: rand(-6, 6) * s,
         vy: rand(-3, 3) * s,
         phase: rand(0, Math.PI * 2),
@@ -154,7 +155,7 @@ export class Ambient {
       f.x += f.vx * dt;
       f.y += f.vy * dt;
       if (f.x < ctx.minX || f.x > ctx.maxX) f.vx *= -1;
-      const top = ctx.groundY - 80 * s;
+      const top = ctx.groundY - 42 * s;
       const bottom = ctx.groundY - 6 * s;
       if (f.y < top || f.y > bottom) f.vy *= -1;
       f.x = Math.max(ctx.minX, Math.min(ctx.maxX, f.x));

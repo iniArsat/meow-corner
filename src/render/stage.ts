@@ -2957,12 +2957,14 @@ export class Stage implements ActorHost {
     this.updateGifts(dt, now);
     this.updateSparkle(dt);
     const [minX, maxX] = this.walkRange();
+    // Efek suasana dan cuaca hanya di area kucing (kiri panel bawah), pita rendah.
+    const areaRight = Math.min(this.width, maxX + 24 * this.pixelScale);
     this.ambient.update(dt, {
       scale: this.pixelScale,
       groundY: this.groundY,
       minX,
       maxX,
-      width: this.width,
+      width: areaRight,
       focus: this.focusMode,
       night: this.isNightNow() && !isWet(this.weather.kind) && this.weather.kind !== "snow",
       butterflies: (this.phase === "pagi" || this.phase === "siang" || this.phase === "sore") && (this.weather.kind === "clear" || this.weather.kind === "partly"),
@@ -2973,7 +2975,7 @@ export class Stage implements ActorHost {
       wind: this.weather.wind,
       phase: this.phase,
       scale: this.pixelScale,
-      width: this.width,
+      width: areaRight,
       groundY: this.groundY,
       minX,
       maxX,
