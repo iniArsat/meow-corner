@@ -6,7 +6,22 @@ Game idle kucing yang tinggal di strip bawah layar desktop. Kucing-kucing berjal
 
 ## Unduh dan main
 
-Buka halaman **[Releases](https://github.com/iniArsat/meow-corner/releases/latest)**, unduh file yang berakhiran `-setup.exe`, lalu klik dua kali untuk memasang. Installer dibuat otomatis oleh GitHub Actions setiap ada perubahan di branch `main`.
+Buka halaman **[Releases](https://github.com/iniArsat/meow-corner/releases/latest)**. Installer dibuat otomatis oleh GitHub Actions setiap ada perubahan di branch `main`.
+
+**Windows:** unduh file yang berakhiran `-setup.exe`, lalu klik dua kali untuk memasang.
+
+**Mac (Apple Silicon M1 ke atas dan Intel, macOS 10.15 atau lebih baru):**
+1. Unduh file yang berakhiran `_universal.dmg`, buka, lalu seret **Meow Corner** ke folder **Applications**.
+2. Aplikasi ini belum ditandatangani Apple (butuh akun Apple Developer berbayar), jadi macOS menolaknya saat pertama dibuka. Buka **Terminal** dan jalankan sekali:
+   ```
+   xattr -cr "/Applications/Meow Corner.app"
+   ```
+   Setelah itu Meow Corner bisa dibuka seperti biasa. Cara lain: coba buka sekali, lalu buka **System Settings → Privacy & Security** dan klik **Open Anyway**.
+3. Strip muncul tepat di atas Dock. Ikon kucing di menu bar (kanan atas) untuk menampilkan, menyembunyikan, atau keluar.
+
+## Baru di versi 0.7.2: versi Mac
+
+- Installer untuk **macOS** (satu aplikasi universal untuk Apple Silicon dan Intel), dibuat otomatis bersama installer Windows. Cara memasangnya ada di bagian **Unduh dan main** di atas.
 
 ## Baru di versi 0.7.1: lebih ringkas
 
@@ -230,7 +245,7 @@ $env:PREVIEW="C:\folder\tujuan"; npx vitest run tests/sprites.test.ts
 ## Batasan yang diketahui
 
 - Deteksi aplikasi layar penuh baru diimplementasikan untuk Windows.
-- Belum diuji di macOS. Di Linux, jendela transparan butuh compositor.
+- Versi Mac dibuat otomatis tetapi belum diuji di Mac sungguhan, dan belum ditandatangani Apple. Di Linux, jendela transparan butuh compositor.
 - Integrasi Steam (achievement, Steam Cloud) belum ada; rencananya lewat crate `steamworks` di sisi Rust.
 - Penghitung ketukan seluruh sistem baru ada di Windows. Di macOS/Linux hanya ketukan di dalam jendela Meow Corner yang terhitung.
 - Efek suara dan musik masih sintetis (dibuat oleh kode, tanpa file audio).
